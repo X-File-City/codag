@@ -10,6 +10,7 @@ import { registerWorkflowTool } from './copilot/workflow-tool';
 import { registerWorkflowQueryTool } from './copilot/workflow-query-tool';
 import { registerNodeQueryTool } from './copilot/node-query-tool';
 import { registerWorkflowNavigateTool } from './copilot/workflow-navigate-tool';
+import { CONFIG } from './config';
 
 const outputChannel = vscode.window.createOutputChannel('AI Workflow Visualizer');
 
@@ -39,8 +40,8 @@ function estimateTokens(text: string): number {
 function createDependencyBatches(
     files: { path: string; content: string; }[],
     metadata: FileMetadata[],
-    maxBatchSize: number = 15,
-    maxTokensPerBatch: number = 800000  // Keep well under 1M limit
+    maxBatchSize: number = CONFIG.BATCH.MAX_SIZE,
+    maxTokensPerBatch: number = CONFIG.BATCH.MAX_TOKENS
 ): { path: string; content: string; }[][] {
     // Build adjacency list from metadata
     const graph = new Map<string, Set<string>>();
@@ -194,7 +195,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Shared debounce mechanism to batch file changes
     const pendingChanges = new Map<string, NodeJS.Timeout>();
-    const DEBOUNCE_MS = 2000; // 2 second debounce to handle compilation + multiple saves
+    const DEBOUNCE_MS = CONFIG.WATCHER.DEBOUNCE_MS;
 
     const scheduleFileAnalysis = async (uri: vscode.Uri, source: string) => {
         const filePath = uri.fsPath;
@@ -505,14 +506,15 @@ export function activate(context: vscode.ExtensionContext) {
                 log(`\nBypassing cache, analyzing all ${workflowFiles.length} files`);
             }
 
-            // Show cached data immediately if available
+            // Show cached data OR empty graph immediately to keep UI responsive
             if (cachedGraphs.length > 0) {
                 const cachedGraph = cache.mergeGraphs(cachedGraphs);
                 webview.show(cachedGraph);
                 log(`✓ Displayed ${cachedGraphs.length} cached graphs (${cachedGraph.nodes.length} nodes, ${cachedGraph.edges.length} edges)`);
             } else {
-                // No cache, show loading screen
-                webview.showLoading("Scanning workspace for AI workflows...");
+                // No cache, show empty graph structure (loading indicator will be shown by notifyAnalysisStarted)
+                const emptyGraph = { nodes: [], edges: [], llms_detected: [], workflows: [] };
+                webview.show(emptyGraph);
             }
 
             // Store newly analyzed graphs
@@ -547,17 +549,30 @@ export function activate(context: vscode.ExtensionContext) {
                     log(`Detected framework: ${framework || 'generic LLM usage'}`);
 
                     // Analyze batches in parallel (limit concurrency to avoid rate limits)
-                    const maxConcurrency = 10;  // Gemini Flash supports ~25 req/sec (1500 RPM)
+                    const maxConcurrency = CONFIG.CONCURRENCY.MAX_PARALLEL;
 
-                    // Process batches in chunks of maxConcurrency
+                    // Track completed batches for incremental updates
+                    let completedBatchCount = 0;
+
+                    // Process batches in chunks of maxConcurrency with incremental graph updates
                     for (let chunkStart = 0; chunkStart < batches.length; chunkStart += maxConcurrency) {
                         const chunkEnd = Math.min(chunkStart + maxConcurrency, batches.length);
                         const batchChunk = batches.slice(chunkStart, chunkEnd);
 
-                        // Process this chunk in parallel
+                        // Process this chunk in parallel, but update graph as each completes
                         const chunkPromises = batchChunk.map((batch, chunkIdx) => {
                             const batchIndex = chunkStart + chunkIdx;
-                            return analyzeBatch(batch, batchIndex, batches.length, framework, metadata, cache, newGraphs);
+                            return analyzeBatch(batch, batchIndex, batches.length, framework, metadata, cache, newGraphs)
+                                .then((batchGraph) => {
+                                    // Update graph incrementally after each batch completes
+                                    completedBatchCount++;
+                                    if (batchGraph) {
+                                        const partialGraph = cache.mergeGraphs([...cachedGraphs, ...newGraphs]);
+                                        const isFirstBatch = completedBatchCount === 1 && cachedGraphs.length === 0;
+                                        webview.show(partialGraph, !isFirstBatch); // Use incremental mode after first batch
+                                        log(`✓ Incremental update: ${partialGraph.nodes.length} nodes, ${partialGraph.edges.length} edges (${completedBatchCount}/${batches.length} batches)`);
+                                    }
+                                });
                         });
 
                         await Promise.all(chunkPromises);
@@ -603,7 +618,19 @@ export function activate(context: vscode.ExtensionContext) {
 
                             // Update progress
                             webview.updateProgress(batchIndex + 1, totalBatches);
+
+                            // Return batchGraph for incremental updates
+                            return batchGraph;
                         } catch (batchError: any) {
+                            // Check if it's a file size error (HTTP 413)
+                            if (batchError.response?.status === 413) {
+                                const sizeErrorMsg = `Batch ${batchIndex + 1} failed: ${batchError.response?.data?.detail || batchError.message}`;
+                                log(sizeErrorMsg);
+                                vscode.window.showErrorMessage(sizeErrorMsg, { modal: false });
+                                // Don't fallback for size errors - skip this batch
+                                return null;
+                            }
+
                             // If batch fails (safety filter, etc), try analyzing files individually
                             log(`Batch ${batchIndex + 1} failed: ${batchError.message}`);
                             log(`Falling back to individual file analysis for this batch...`);
@@ -652,6 +679,9 @@ export function activate(context: vscode.ExtensionContext) {
                                 const chunk = fallbackPromises.slice(i, i + maxConcurrency);
                                 await Promise.all(chunk.map(fn => fn()));
                             }
+
+                            // Return null to indicate fallback was used (graphs array already updated)
+                            return null;
                         }
                     }
 
@@ -712,14 +742,16 @@ export function activate(context: vscode.ExtensionContext) {
             log(`\n✓ Final graph: ${cachedGraphs.length} cached + ${newGraphs.length} new = ${graph.nodes.length} nodes, ${graph.edges.length} edges`);
 
 
-            // Show final graph (or update if cached was already shown)
+            // Show final graph (use incremental mode if we've already shown something)
+            const shouldUseIncrementalMode = cachedGraphs.length > 0 || filesToAnalyze.length > 0;
+
             if (graph.nodes.length === 0 && graph.edges.length === 0) {
                 vscode.window.showWarningMessage(
                     'No workflows detected. Files may have been rejected by the LLM or contain no LLM usage.'
                 );
                 log('⚠️  Final graph is empty - all files rejected or contain no LLM usage');
             }
-            webview.show(graph);
+            webview.show(graph, shouldUseIncrementalMode);
         } catch (error: any) {
             log(`ERROR: ${error.message}`);
             log(`Status: ${error.response?.status}`);
@@ -733,8 +765,15 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            webview.notifyAnalysisComplete(false, errorMsg);
-            vscode.window.showErrorMessage(`Workspace scan failed: ${errorMsg}`);
+            // Handle file size errors (HTTP 413) with clearer messaging
+            if (error.response?.status === 413) {
+                const sizeErrorMsg = `Analysis failed: ${errorMsg}\n\nTip: Try analyzing fewer files at once or reduce batch size in settings.`;
+                webview.notifyAnalysisComplete(false, sizeErrorMsg);
+                vscode.window.showErrorMessage(sizeErrorMsg, { modal: false });
+            } else {
+                webview.notifyAnalysisComplete(false, errorMsg);
+                vscode.window.showErrorMessage(`Workspace scan failed: ${errorMsg}`);
+            }
         }
     }
 

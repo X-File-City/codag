@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { staticAnalyzer } from './static-analyzer';
+import { CONFIG } from './config';
 
 export class WorkflowDetector {
     // LLM Client Detection Patterns
@@ -208,7 +209,7 @@ export class WorkflowDetector {
         depth: number = 0
     ): Promise<vscode.Uri[]> {
         // Prevent infinite recursion from circular imports
-        const MAX_DEPTH = 3;
+        const MAX_DEPTH = CONFIG.IMPORTS.MAX_DEPTH;
         if (depth >= MAX_DEPTH) {
             console.log(`⚠️  Max recursion depth ${MAX_DEPTH} reached, stopping import expansion`);
             return [];

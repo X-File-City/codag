@@ -11,6 +11,7 @@ import {
   FileContext,
   WorkflowMetadata
 } from './types';
+import { filterVisibleWorkflows } from './graph-filter';
 
 export interface MetadataOptions {
   includeCodeSnippets?: boolean;
@@ -115,8 +116,9 @@ export class WorkflowMetadataProvider {
       return 0;
     });
 
-    // Extract workflow structure info
-    const workflows: WorkflowInfo[] = graph.workflows.map(wf => ({
+    // Extract workflow structure info (only workflows visible in the webview)
+    const visibleWorkflows = filterVisibleWorkflows(graph);
+    const workflows: WorkflowInfo[] = visibleWorkflows.map(wf => ({
       name: wf.name,
       nodeIds: wf.nodeIds || [],
       entryPoints: graph.nodes

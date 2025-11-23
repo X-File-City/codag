@@ -61,6 +61,22 @@ async def analyze_workflow(
     # TODO: Re-enable rate limiting when ready
     # check_rate_limit(current_user)
 
+    # Input validation
+    MAX_CODE_SIZE = 5_000_000  # 5MB limit
+    MAX_FILES = 50  # Reasonable limit on number of files
+
+    if len(request.code) > MAX_CODE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Code size ({len(request.code)} bytes) exceeds maximum allowed size ({MAX_CODE_SIZE} bytes). Try analyzing fewer files or smaller files."
+        )
+
+    if request.file_paths and len(request.file_paths) > MAX_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Number of files ({len(request.file_paths)}) exceeds maximum allowed ({MAX_FILES}). Try analyzing fewer files at once."
+        )
+
     # Static analysis
     framework = request.framework_hint or static_analyzer.detect_framework(
         request.code,

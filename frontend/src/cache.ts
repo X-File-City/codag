@@ -277,9 +277,15 @@ export class CacheManager {
             }
         }
 
+        // Filter out orphaned edges (edges whose source or target nodes don't exist)
+        const nodeIds = new Set(mergedNodes.keys());
+        const validEdges = Array.from(mergedEdges.values()).filter(edge =>
+            nodeIds.has(edge.source) && nodeIds.has(edge.target)
+        );
+
         return {
             nodes: Array.from(mergedNodes.values()),
-            edges: Array.from(mergedEdges.values()),
+            edges: validEdges,
             llms_detected: Array.from(llmsDetectedSet),
             workflows: Array.from(mergedWorkflows.values())
         };

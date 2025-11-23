@@ -45,6 +45,53 @@ export class WebviewManager {
         }
     }
 
+    private setupMessageHandlers() {
+        if (!this.panel) return;
+
+        this.panel.webview.onDidReceiveMessage(
+            async (message) => {
+                if (message.command === 'openFile') {
+                    try {
+                        const fileUri = vscode.Uri.file(message.file);
+                        const document = await vscode.workspace.openTextDocument(fileUri);
+                        const editor = await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
+
+                        const line = message.line - 1;
+                        const range = new vscode.Range(line, 0, line, 0);
+                        editor.selection = new vscode.Selection(range.start, range.end);
+                        editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+                    } catch (error: any) {
+                        vscode.window.showErrorMessage(`Could not open file: ${error.message}`);
+                    }
+                } else if (message.command === 'refreshAnalysis') {
+                    vscode.commands.executeCommand('aiworkflowviz.refresh');
+                } else if (message.command === 'nodeSelected') {
+                    this.updateViewState({
+                        selectedNodeId: message.nodeId,
+                        selectedNodeLabel: message.nodeLabel,
+                        selectedNodeType: message.nodeType
+                    });
+                } else if (message.command === 'nodeDeselected') {
+                    this.updateViewState({
+                        selectedNodeId: null,
+                        selectedNodeLabel: undefined,
+                        selectedNodeType: undefined
+                    });
+                } else if (message.command === 'workflowVisibilityChanged') {
+                    this.updateViewState({
+                        expandedWorkflowIds: message.expandedWorkflowIds || []
+                    });
+                } else if (message.command === 'viewportChanged') {
+                    this.updateViewState({
+                        visibleNodeIds: message.visibleNodeIds || []
+                    });
+                }
+            },
+            undefined,
+            this.context.subscriptions
+        );
+    }
+
     showLoading(message: string) {
         // Create panel if needed
         if (!this.panel) {
@@ -62,49 +109,7 @@ export class WebviewManager {
                 this.panel = undefined;
             });
 
-            // Handle messages from webview
-            this.panel.webview.onDidReceiveMessage(
-                async (message) => {
-                    if (message.command === 'openFile') {
-                        try {
-                            const fileUri = vscode.Uri.file(message.file);
-                            const document = await vscode.workspace.openTextDocument(fileUri);
-                            const editor = await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
-
-                            const line = message.line - 1;
-                            const range = new vscode.Range(line, 0, line, 0);
-                            editor.selection = new vscode.Selection(range.start, range.end);
-                            editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-                        } catch (error: any) {
-                            vscode.window.showErrorMessage(`Could not open file: ${error.message}`);
-                        }
-                    } else if (message.command === 'refreshAnalysis') {
-                        vscode.commands.executeCommand('aiworkflowviz.refresh');
-                    } else if (message.command === 'nodeSelected') {
-                        this.updateViewState({
-                            selectedNodeId: message.nodeId,
-                            selectedNodeLabel: message.nodeLabel,
-                            selectedNodeType: message.nodeType
-                        });
-                    } else if (message.command === 'nodeDeselected') {
-                        this.updateViewState({
-                            selectedNodeId: null,
-                            selectedNodeLabel: undefined,
-                            selectedNodeType: undefined
-                        });
-                    } else if (message.command === 'workflowVisibilityChanged') {
-                        this.updateViewState({
-                            expandedWorkflowIds: message.expandedWorkflowIds || []
-                        });
-                    } else if (message.command === 'viewportChanged') {
-                        this.updateViewState({
-                            visibleNodeIds: message.visibleNodeIds || []
-                        });
-                    }
-                },
-                undefined,
-                this.context.subscriptions
-            );
+            this.setupMessageHandlers();
 
             // Set initial HTML with empty graph
             this.panel.webview.html = this.getHtml({ nodes: [], edges: [], llms_detected: [], workflows: [] });
@@ -169,49 +174,7 @@ export class WebviewManager {
                 this.panel = undefined;
             });
 
-            // Handle messages from webview (same as showLoading)
-            this.panel.webview.onDidReceiveMessage(
-                async (message) => {
-                    if (message.command === 'openFile') {
-                        try {
-                            const fileUri = vscode.Uri.file(message.file);
-                            const document = await vscode.workspace.openTextDocument(fileUri);
-                            const editor = await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
-
-                            const line = message.line - 1;
-                            const range = new vscode.Range(line, 0, line, 0);
-                            editor.selection = new vscode.Selection(range.start, range.end);
-                            editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-                        } catch (error: any) {
-                            vscode.window.showErrorMessage(`Could not open file: ${error.message}`);
-                        }
-                    } else if (message.command === 'refreshAnalysis') {
-                        vscode.commands.executeCommand('aiworkflowviz.refresh');
-                    } else if (message.command === 'nodeSelected') {
-                        this.updateViewState({
-                            selectedNodeId: message.nodeId,
-                            selectedNodeLabel: message.nodeLabel,
-                            selectedNodeType: message.nodeType
-                        });
-                    } else if (message.command === 'nodeDeselected') {
-                        this.updateViewState({
-                            selectedNodeId: null,
-                            selectedNodeLabel: undefined,
-                            selectedNodeType: undefined
-                        });
-                    } else if (message.command === 'workflowVisibilityChanged') {
-                        this.updateViewState({
-                            expandedWorkflowIds: message.expandedWorkflowIds || []
-                        });
-                    } else if (message.command === 'viewportChanged') {
-                        this.updateViewState({
-                            visibleNodeIds: message.visibleNodeIds || []
-                        });
-                    }
-                },
-                undefined,
-                this.context.subscriptions
-            );
+            this.setupMessageHandlers();
         }
 
         this.panel.webview.html = this.getHtml(graph);
@@ -2093,7 +2056,6 @@ export class WebviewManager {
                 case 'updateProgress':
                     indicator.className = 'loading-indicator';
                     iconSpan.textContent = '⟳';
-                    textSpan.textContent = 'Analyzing workflow...';
                     indicator.style.display = 'block';
 
                     // Show and update progress bar
@@ -2103,6 +2065,8 @@ export class WebviewManager {
                         progressContainer.style.display = 'block';
                         const percent = (message.current / message.total) * 100;
                         progressFill.style.width = \`\${percent}%\`;
+                        // Update text with percentage
+                        textSpan.textContent = \`Analyzing workflows... \${Math.round(percent)}%\`;
                     }
                     break;
 
@@ -2149,7 +2113,7 @@ export class WebviewManager {
                         const currentTransform = d3.zoomTransform(svg.node());
 
                         // Update data with new graph
-                        data = message.graph;
+                        currentGraphData = message.graph;
 
                         // Re-render graph
                         renderGraph();
