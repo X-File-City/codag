@@ -6,6 +6,7 @@
 import { getInitializationScript } from './scripts/initialization';
 import { utilitiesScript } from './scripts/utilities';
 import { workflowDetectionScript } from './scripts/workflow-detection';
+import { graphDiffScript } from './scripts/graph-diff';
 
 /**
  * Loads and combines all webview scripts in the correct order
@@ -17,6 +18,8 @@ export function loadScripts(graphJson: string, mainRendererScript: string): stri
     return `${getInitializationScript(graphJson)}
 
 ${utilitiesScript}
+
+${graphDiffScript}
 
 ${workflowDetectionScript}
 

@@ -3,13 +3,26 @@
  * Extracted from webview.ts to separate concerns
  */
 
-export function getHtmlTemplate(webviewStyles: string, scriptContent: string): string {
+export interface LoadingOptions {
+    loading?: boolean;
+    progress?: { current: number; total: number };
+}
+
+export function getHtmlTemplate(
+    webviewStyles: string,
+    scriptContent: string,
+    loadingOptions?: LoadingOptions
+): string {
+    const isLoading = loadingOptions?.loading ?? false;
+    const progress = loadingOptions?.progress;
+    const percentage = progress ? Math.round((progress.current / progress.total) * 100) : 0;
+    const progressText = progress ? `Analyzing batches... ${progress.current}/${progress.total}` : 'Analyzing workflow...';
     return `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Workflow Visualization</title>
+    <title>Codag</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
     <style>${webviewStyles}
@@ -17,7 +30,23 @@ export function getHtmlTemplate(webviewStyles: string, scriptContent: string): s
 </head>
 <body>
     <div id="header">
-        <h1>AI Workflow Visualization</h1>
+        <div class="header-left">
+            <svg class="codag-logo" viewBox="0 0 183.49023 48.22958" xmlns="http://www.w3.org/2000/svg">
+              <g transform="translate(-4.663109,-100.21196)">
+                <circle fill="currentColor" cx="12.989979" cy="136.37827" r="8.32687" />
+                <path fill="currentColor" d="m 23.348962,100.21197 c -1.884958,0 -3.402376,1.51742 -3.402376,3.40238 v 22.4131 c 0,1.88496 1.517418,3.40238 3.402376,3.40238 h 22.413103 c 1.884958,0 3.402376,-1.51742 3.402376,-3.40238 v -22.4131 c 0,-1.88496 -1.517418,-3.40238 -3.402376,-3.40238 z m 11.30267,6.39083 a 8.32687,8.32687 0 0 1 8.32714,8.32714 8.32687,8.32687 0 0 1 -8.32714,8.32662 8.32687,8.32687 0 0 1 -8.326624,-8.32662 8.32687,8.32687 0 0 1 8.326624,-8.32714 z" />
+                <path fill="currentColor" d="m 12.407616,130.60648 13.191254,-13.19125 6.269113,6.39971 -15.411566,15.41157 z" />
+                <text fill="currentColor" style="font-size:44.0158px;font-weight:bold;font-family:Damascus,system-ui,-apple-system,sans-serif" x="55.822399" y="131.09103" transform="scale(0.94435948,1.0589188)">codag</text>
+              </g>
+            </svg>
+            <div id="snapshot" class="snapshot-stats">
+                <span class="stat-label"><span id="statWorkflows">0</span> workflows</span>
+                <span class="stat-divider">·</span>
+                <span class="stat-label"><span id="statLlmCalls">0</span> LLM calls</span>
+                <span class="stat-divider">·</span>
+                <span class="stat-label">Last updated at <span id="statTimestamp">--:--</span></span>
+            </div>
+        </div>
         <div id="controls">
             <button onclick="zoomIn()" title="Zoom In">
                 <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
@@ -36,6 +65,16 @@ export function getHtmlTemplate(webviewStyles: string, scriptContent: string): s
             </button>
             <button class="refresh-btn" onclick="refreshAnalysis()" title="Reanalyze Entire Workspace">
                 <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+            </button>
+            <span class="controls-divider"></span>
+            <button class="export-btn" onclick="exportSVG()" title="Export as SVG">
+                <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+            </button>
+            <button class="export-btn" onclick="exportPNG()" title="Export as PNG">
+                <svg viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+            </button>
+            <button class="export-btn" onclick="exportMarkdown()" title="Export as Markdown">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
             </button>
         </div>
     </div>
@@ -69,14 +108,14 @@ export function getHtmlTemplate(webviewStyles: string, scriptContent: string): s
 
     <div id="edgeTooltip" class="edge-tooltip" style="display: none;"></div>
 
-    <div id="loadingIndicator" class="loading-indicator" style="display: none;">
+    <div id="loadingIndicator" class="loading-indicator" style="display: ${isLoading ? 'block' : 'none'};">
         <div class="loading-content">
             <div>
                 <div class="loading-icon">⏳</div>
-                <div class="loading-text">Analyzing workflow...</div>
+                <div class="loading-text">${progressText}</div>
             </div>
-            <div class="progress-bar-container" style="display: none;">
-                <div class="progress-bar-fill"></div>
+            <div class="progress-bar-container" style="display: ${isLoading && progress ? 'block' : 'none'};">
+                <div class="progress-bar-fill" style="width: ${percentage}%;"></div>
             </div>
         </div>
     </div>

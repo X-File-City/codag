@@ -4,6 +4,7 @@ import { WorkflowGraph } from '../api';
 import { ViewState } from './types';
 import { filterGraphToExpanded } from './filter-utils';
 import { filterOrphanedNodes } from './graph-filter';
+import { TYPE_SYMBOLS, createNodeLink } from './compact-formatter';
 
 interface WorkflowNavigateInput {
     operation: 'path' | 'upstream' | 'downstream';
@@ -54,23 +55,23 @@ class WorkflowNavigateTool implements vscode.LanguageModelTool<WorkflowNavigateI
                 console.log(`[workflow-navigate] Filtered to ${filteredGraph.nodes.length} nodes in ${filteredGraph.workflows.length} expanded workflows`);
             }
 
-            // Helper to create clickable node link
-            const createNodeLink = (nodeId: string): string => {
+            // Helper to create compact node link with symbol
+            const makeLink = (nodeId: string): string => {
                 const node = filteredGraph.nodes.find(n => n.id === nodeId);
                 if (!node) return nodeId;
-                const commandUri = `command:aiworkflowviz.focusNode?${encodeURIComponent(JSON.stringify([nodeId, node.label]))}`;
-                return `[${node.label}](${commandUri} "${node.label} (${node.type})")`;
+                const sym = TYPE_SYMBOLS[node.type] || '□';
+                return `${sym} ${createNodeLink(nodeId, node.label)}`;
             };
 
             switch (input.operation) {
                 case 'path':
-                    return this.findPath(filteredGraph, input.fromNode!, input.toNode!, createNodeLink);
+                    return this.findPath(filteredGraph, input.fromNode!, input.toNode!, makeLink);
 
                 case 'upstream':
-                    return this.findUpstream(filteredGraph, input.fromNode!, input.maxDepth || 5, createNodeLink);
+                    return this.findUpstream(filteredGraph, input.fromNode!, input.maxDepth || 5, makeLink);
 
                 case 'downstream':
-                    return this.findDownstream(filteredGraph, input.fromNode!, input.maxDepth || 5, createNodeLink);
+                    return this.findDownstream(filteredGraph, input.fromNode!, input.maxDepth || 5, makeLink);
 
                 default:
                     return new vscode.LanguageModelToolResult([
@@ -107,29 +108,23 @@ class WorkflowNavigateTool implements vscode.LanguageModelTool<WorkflowNavigateI
             const { node, path } = queue.shift()!;
 
             if (node === toNodeId) {
-                // Found the path!
+                // Found the path - compact format
                 const pathLinks = path.map(createLink);
                 const parts: string[] = [];
-                parts.push(`## Path Found: ${createLink(fromNodeId)} → ${createLink(toNodeId)}\n`);
-                parts.push(`**Length:** ${path.length - 1} hop${path.length - 1 !== 1 ? 's' : ''}\n`);
-                parts.push(`**Path:**`);
+                parts.push(`Path (${path.length - 1} hop${path.length - 1 !== 1 ? 's' : ''}):`);
                 parts.push(pathLinks.join(' → '));
-                parts.push('');
 
                 // Show files involved
                 const filesInPath = new Set<string>();
                 path.forEach(nodeId => {
-                    const node = graph.nodes.find(n => n.id === nodeId);
-                    if (node?.source?.file) {
-                        filesInPath.add(node.source.file);
+                    const n = graph.nodes.find(n => n.id === nodeId);
+                    if (n?.source?.file) {
+                        filesInPath.add(n.source.file);
                     }
                 });
 
-                if (filesInPath.size > 0) {
-                    parts.push(`\n**Files involved:** ${filesInPath.size}`);
-                    Array.from(filesInPath).forEach(file => {
-                        parts.push(`- \`${file}\``);
-                    });
+                if (filesInPath.size > 1) {
+                    parts.push(`Files: ${Array.from(filesInPath).join(', ')}`);
                 }
 
                 return new vscode.LanguageModelToolResult([
@@ -184,9 +179,9 @@ class WorkflowNavigateTool implements vscode.LanguageModelTool<WorkflowNavigateI
             }
         }
 
+        // Compact format
         const parts: string[] = [];
-        parts.push(`## Upstream Dependencies of ${createLink(nodeId)}\n`);
-        parts.push(`**Found:** ${upstream.size} upstream node${upstream.size !== 1 ? 's' : ''} (max depth: ${maxDepth})\n`);
+        parts.push(`Upstream of ${createLink(nodeId)} (${upstream.size} nodes):`);
 
         if (upstream.size > 0) {
             // Group by depth
@@ -199,10 +194,8 @@ class WorkflowNavigateTool implements vscode.LanguageModelTool<WorkflowNavigateI
             for (let d = 1; d <= maxDepth; d++) {
                 const nodesAtDepth = byDepth.get(d);
                 if (nodesAtDepth && nodesAtDepth.length > 0) {
-                    parts.push(`\n**Depth ${d}:**`);
-                    nodesAtDepth.forEach(n => {
-                        parts.push(`- ${createLink(n)}`);
-                    });
+                    const links = nodesAtDepth.map(n => createLink(n));
+                    parts.push(`  ←${d}: ${links.join(', ')}`);
                 }
             }
         }
@@ -245,9 +238,9 @@ class WorkflowNavigateTool implements vscode.LanguageModelTool<WorkflowNavigateI
             }
         }
 
+        // Compact format
         const parts: string[] = [];
-        parts.push(`## Downstream Dependencies of ${createLink(nodeId)}\n`);
-        parts.push(`**Found:** ${downstream.size} downstream node${downstream.size !== 1 ? 's' : ''} (max depth: ${maxDepth})\n`);
+        parts.push(`Downstream of ${createLink(nodeId)} (${downstream.size} nodes):`);
 
         if (downstream.size > 0) {
             // Group by depth
@@ -260,10 +253,8 @@ class WorkflowNavigateTool implements vscode.LanguageModelTool<WorkflowNavigateI
             for (let d = 1; d <= maxDepth; d++) {
                 const nodesAtDepth = byDepth.get(d);
                 if (nodesAtDepth && nodesAtDepth.length > 0) {
-                    parts.push(`\n**Depth ${d}:**`);
-                    nodesAtDepth.forEach(n => {
-                        parts.push(`- ${createLink(n)}`);
-                    });
+                    const links = nodesAtDepth.map(n => createLink(n));
+                    parts.push(`  →${d}: ${links.join(', ')}`);
                 }
             }
         }

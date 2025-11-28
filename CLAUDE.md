@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VSCode extension that visualizes AI/LLM workflows using Gemini 2.5 Flash. Analyzes code containing LLM API calls (OpenAI, Anthropic, Gemini, Groq, Ollama, Cohere, Hugging Face) and frameworks (LangGraph, Mastra, LangChain, CrewAI) to generate interactive workflow graphs.
+**Codag** (COmpound Directed Acyclic Graphs) - VSCode extension that visualizes AI/LLM workflows using Gemini 2.5 Flash. Analyzes code containing LLM API calls (OpenAI, Anthropic, Gemini, Groq, Ollama, Cohere, Hugging Face) and frameworks (LangGraph, Mastra, LangChain, CrewAI) to generate interactive workflow graphs.
 
 ## Architecture
 
@@ -112,7 +112,7 @@ Each node includes `source: {file, line, function}` for code navigation.
   - Critical path rules: Lines 207-235
   - Workflow connectivity validation: Lines 262-279
 - Restart backend: `make stop && make run`
-- Clear cache via command palette: "AI Workflow Visualizer: Clear Cache"
+- Clear cache via command palette: "Codag: Clear Cache"
 
 ## Known Issues & Solutions
 

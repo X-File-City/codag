@@ -13,7 +13,7 @@ from gemini_client import gemini_client
 from analyzer import static_analyzer
 import json
 
-app = FastAPI(title="AI Workflow Visualizer")
+app = FastAPI(title="Codag")
 
 app.add_middleware(
     CORSMiddleware,
@@ -98,6 +98,20 @@ async def analyze_workflow(
         if result.endswith("```"):
             result = result[:-3]
 
+        # Helper to fix file paths from LLM (handles both relative and mangled absolute paths)
+        def fix_file_path(path: str, file_paths: list) -> str:
+            if not path:
+                return path
+            # If path is already in file_paths, it's correct
+            if path in file_paths:
+                return path
+            # Extract just the filename and find matching input path
+            filename = path.split('/')[-1]
+            for input_path in file_paths:
+                if input_path.endswith('/' + filename):
+                    return input_path
+            return path
+
         # Try to parse JSON
         try:
             graph_data = json.loads(result.strip())
@@ -130,6 +144,16 @@ async def analyze_workflow(
                     )
             else:
                 raise
+
+        # Fix file paths in nodes (LLM sometimes returns relative paths)
+        for node in graph_data.get('nodes', []):
+            if node.get('source') and node['source'].get('file'):
+                node['source']['file'] = fix_file_path(node['source']['file'], request.file_paths)
+
+        # Fix file paths in edges
+        for edge in graph_data.get('edges', []):
+            if edge.get('sourceLocation') and edge['sourceLocation'].get('file'):
+                edge['sourceLocation']['file'] = fix_file_path(edge['sourceLocation']['file'], request.file_paths)
 
         return WorkflowGraph(**graph_data)
     except HTTPException:

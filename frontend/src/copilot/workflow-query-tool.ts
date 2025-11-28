@@ -4,6 +4,7 @@ import { WorkflowGraph } from '../api';
 import { ViewState } from './types';
 import { filterToExpandedWorkflows } from './filter-utils';
 import { filterOrphanedNodes } from './graph-filter';
+import { TYPE_SYMBOLS, createNodeLink, formatWorkflow, formatLegend } from './compact-formatter';
 
 interface WorkflowQueryInput {
     workflowName: string;
@@ -67,83 +68,55 @@ class WorkflowQueryTool implements vscode.LanguageModelTool<WorkflowQueryInput> 
 
             // Get all nodes in this workflow
             const workflowNodes = filteredGraph.nodes.filter(n => workflow.nodeIds.includes(n.id));
+            const workflowEdges = filteredGraph.edges.filter(e =>
+                workflow.nodeIds.includes(e.source) && workflow.nodeIds.includes(e.target)
+            );
 
-            // Helper to create clickable node link
-            const createNodeLink = (nodeId: string): string => {
-                const node = filteredGraph.nodes.find(n => n.id === nodeId);
-                if (!node) return nodeId;
-                const commandUri = `command:aiworkflowviz.focusNode?${encodeURIComponent(JSON.stringify([nodeId, node.label]))}`;
-                return `[${node.label}](${commandUri} "${node.label} (${node.type})")`;
-            };
-
-            // Build the response
+            // Build compact response
             const parts: string[] = [];
-            parts.push(`## Workflow: ${workflow.name}\n`);
-            parts.push(`**Node Count:** ${workflowNodes.length} nodes\n`);
 
-            // Group nodes by file
-            const nodesByFile = new Map<string, typeof workflowNodes>();
-            workflowNodes.forEach(node => {
-                const file = node.source?.file || 'unknown';
-                if (!nodesByFile.has(file)) {
-                    nodesByFile.set(file, []);
-                }
-                nodesByFile.get(file)!.push(node);
-            });
+            // Show workflow as tree structure
+            parts.push(formatWorkflow(workflow.name, workflowNodes, workflowEdges, filteredGraph));
+            parts.push('');
 
-            parts.push(`**Files:** ${nodesByFile.size} file${nodesByFile.size !== 1 ? 's' : ''}\n`);
-
-            // Show all nodes
-            if (input.includeDetails) {
-                parts.push(`\n### All Nodes\n`);
-                workflowNodes.forEach((node, index) => {
-                    parts.push(`${index + 1}. ${createNodeLink(node.id)} - \`${node.type}\``);
-                    if (node.source) {
-                        parts.push(`   - File: \`${node.source.file}\``);
-                        parts.push(`   - Location: ${node.source.function} at line ${node.source.line}`);
-                    }
-                    parts.push('');
-                });
-            } else {
-                // Just show clickable links
-                parts.push(`\n### All Nodes\n`);
-                const nodeLinks = workflowNodes.map((node, index) =>
-                    `${index + 1}. ${createNodeLink(node.id)}`
-                );
-                parts.push(nodeLinks.join('\n'));
-                parts.push('');
-            }
-
-            // Show entry/exit points
+            // Entry/exit points summary
             const entryNodes = workflowNodes.filter(n => n.isEntryPoint);
-            if (entryNodes.length > 0) {
-                const entryLinks = entryNodes.map(n => createNodeLink(n.id));
-                parts.push(`\n**Entry Points:** ${entryLinks.join(', ')}`);
-            }
-
             const exitNodes = workflowNodes.filter(n => n.isExitPoint);
-            if (exitNodes.length > 0) {
-                const exitLinks = exitNodes.map(n => createNodeLink(n.id));
-                parts.push(`**Exit Points:** ${exitLinks.join(', ')}`);
+
+            if (entryNodes.length > 0) {
+                const entryLinks = entryNodes.map(n => {
+                    const sym = TYPE_SYMBOLS[n.type] || '□';
+                    return `${sym} ${createNodeLink(n.id, n.label)}`;
+                });
+                parts.push(`Entry: ${entryLinks.join(', ')}`);
             }
 
-            // Show critical path if available
-            const criticalPathEdges = filteredGraph.edges.filter(e => e.isCriticalPath);
+            if (exitNodes.length > 0) {
+                const exitLinks = exitNodes.map(n => {
+                    const sym = TYPE_SYMBOLS[n.type] || '□';
+                    return `${sym} ${createNodeLink(n.id, n.label)}`;
+                });
+                parts.push(`Exit: ${exitLinks.join(', ')}`);
+            }
+
+            // Critical path (if any)
+            const criticalPathEdges = workflowEdges.filter(e => e.isCriticalPath);
             if (criticalPathEdges.length > 0) {
-                // Build path from edges
                 const criticalNodeIds = new Set<string>();
                 criticalPathEdges.forEach(e => {
                     criticalNodeIds.add(e.source);
                     criticalNodeIds.add(e.target);
                 });
-                const criticalNodes = Array.from(criticalNodeIds)
-                    .filter(id => workflow.nodeIds.includes(id))
-                    .map(createNodeLink);
-
-                if (criticalNodes.length > 0) {
-                    parts.push(`\n**Critical Path Nodes:** ${criticalNodes.join(' → ')}`);
-                }
+                const criticalLinks = Array.from(criticalNodeIds)
+                    .map(id => {
+                        const n = workflowNodes.find(n => n.id === id);
+                        return n ? createNodeLink(id, n.label) : id;
+                    });
+                parts.push(`Critical: ${criticalLinks.join(' → ')}`);
             }
+
+            parts.push('');
+            parts.push(formatLegend());
 
             return new vscode.LanguageModelToolResult([
                 new vscode.LanguageModelTextPart(parts.join('\n'))

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { APIClient } from './api';
+import { APIClient, WorkflowGraph } from './api';
 import { AuthManager } from './auth';
 import { CacheManager } from './cache';
 import { WorkflowDetector } from './analyzer';
@@ -12,7 +12,7 @@ import { registerNodeQueryTool } from './copilot/node-query-tool';
 import { registerWorkflowNavigateTool } from './copilot/workflow-navigate-tool';
 import { CONFIG } from './config';
 
-const outputChannel = vscode.window.createOutputChannel('AI Workflow Visualizer');
+const outputChannel = vscode.window.createOutputChannel('Codag');
 
 /**
  * Log message with timestamp
@@ -34,7 +34,7 @@ function estimateTokens(text: string): number {
 }
 
 /**
- * Create batches of files based on dependency relationships
+> * Create batches of files based on dependency relationships
  * Groups related files together while respecting token limits
  */
 function createDependencyBatches(
@@ -129,9 +129,9 @@ function createDependencyBatches(
 }
 
 export function activate(context: vscode.ExtensionContext) {
-    log('AI Workflow Visualizer activating...');
+    log('Codag activating...');
 
-    const config = vscode.workspace.getConfiguration('aiworkflowviz');
+    const config = vscode.workspace.getConfiguration('codag');
     const apiUrl = config.get<string>('apiUrl', 'http://localhost:8000');
 
     log(`Backend API URL: ${apiUrl}`);
@@ -183,7 +183,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 6. Chat Participant - Explicit @workflow mention (100% reliable)
     context.subscriptions.push(registerWorkflowParticipant(context, cache, () => webview.getViewState()));
-    log('Registered @workflow chat participant (explicit)');
+    log('Registered @codag chat participant (explicit)');
 
     // File watching for auto-refresh on save
     const fileWatcher = vscode.workspace.createFileSystemWatcher(
@@ -248,7 +248,7 @@ export function activate(context: vscode.ExtensionContext) {
     const codeModifier = new CodeModifier();
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('aiworkflowviz.applyCodeModification', async (modification: {
+        vscode.commands.registerCommand('codag.applyCodeModification', async (modification: {
             type: 'insert' | 'modify',
             file: string,
             line: number,
@@ -293,7 +293,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Register command to focus on a specific node (for clickable links from Copilot)
     context.subscriptions.push(
-        vscode.commands.registerCommand('aiworkflowviz.focusNode', (nodeId: string, nodeLabel?: string) => {
+        vscode.commands.registerCommand('codag.focusNode', (nodeId: string, nodeLabel?: string) => {
             log(`Focusing on node: ${nodeId} (${nodeLabel || 'unknown'})`);
             webview.focusNode(nodeId);
         })
@@ -302,15 +302,15 @@ export function activate(context: vscode.ExtensionContext) {
     log('Extension activated successfully');
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('aiworkflowviz.login', () => auth.login())
+        vscode.commands.registerCommand('codag.login', () => auth.login())
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('aiworkflowviz.register', () => auth.register())
+        vscode.commands.registerCommand('codag.register', () => auth.register())
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('aiworkflowviz.logout', () => auth.logout())
+        vscode.commands.registerCommand('codag.logout', () => auth.logout())
     );
 
     async function analyzeCurrentFile(bypassCache: boolean = false) {
@@ -398,13 +398,13 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('aiworkflowviz.visualize', async () => {
+        vscode.commands.registerCommand('codag.visualize', async () => {
             await analyzeCurrentFile(false);
         })
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('aiworkflowviz.refresh', async () => {
+        vscode.commands.registerCommand('codag.refresh', async () => {
             // Confirm before clearing cache
             const confirm = await vscode.window.showWarningMessage(
                 'This will clear all cached analysis and reanalyze the entire workspace. Continue?',
@@ -506,15 +506,16 @@ export function activate(context: vscode.ExtensionContext) {
                 log(`\nBypassing cache, analyzing all ${workflowFiles.length} files`);
             }
 
-            // Show cached data OR empty graph immediately to keep UI responsive
+            // Show initial state with loading indicator if we have uncached files
+            const hasUncachedFiles = filesToAnalyze.length > 0;
             if (cachedGraphs.length > 0) {
                 const cachedGraph = cache.mergeGraphs(cachedGraphs);
-                webview.show(cachedGraph);
+                webview.show(cachedGraph, hasUncachedFiles ? { loading: true, progress: { current: 0, total: 1 } } : undefined);
                 log(`✓ Displayed ${cachedGraphs.length} cached graphs (${cachedGraph.nodes.length} nodes, ${cachedGraph.edges.length} edges)`);
             } else {
-                // No cache, show empty graph structure (loading indicator will be shown by notifyAnalysisStarted)
+                // No cache, show empty graph with loading indicator
                 const emptyGraph = { nodes: [], edges: [], llms_detected: [], workflows: [] };
-                webview.show(emptyGraph);
+                webview.show(emptyGraph, hasUncachedFiles ? { loading: true, progress: { current: 0, total: 1 } } : undefined);
             }
 
             // Store newly analyzed graphs
@@ -539,6 +540,9 @@ export function activate(context: vscode.ExtensionContext) {
                         log(`  Batch ${i + 1}: ${batches[i].length} files (~${Math.round(batchTokens / 1000)}k tokens)`);
                     }
 
+                    // Update progress with correct batch total
+                    webview.updateProgress(0, batches.length);
+
                     // Detect framework from uncached files
                     let framework: string | null = null;
                     for (const file of filesToAnalyze) {
@@ -551,6 +555,41 @@ export function activate(context: vscode.ExtensionContext) {
                     // Analyze batches in parallel (limit concurrency to avoid rate limits)
                     const maxConcurrency = CONFIG.CONCURRENCY.MAX_PARALLEL;
 
+                    // Helper to cache files immediately after batch completes
+                    async function cacheFilesFromGraph(
+                        files: { path: string; content: string }[],
+                        graph: WorkflowGraph
+                    ) {
+                        for (const file of files) {
+                            const fileNodes = graph.nodes.filter((n: any) => n.source?.file === file.path);
+                            const fileNodeIds = new Set(fileNodes.map((n: any) => n.id));
+                            const fileEdges = graph.edges.filter((e: any) =>
+                                fileNodeIds.has(e.source) && fileNodeIds.has(e.target)
+                            );
+
+                            const isolatedGraph = {
+                                nodes: fileNodes,
+                                edges: fileEdges,
+                                llms_detected: graph.llms_detected || [],
+                                workflows: graph.workflows || []
+                            };
+
+                            if (!bypassCache) {
+                                if (fileNodes.length > 0) {
+                                    await cache.setPerFile(file.path, file.content, isolatedGraph);
+                                } else {
+                                    log(`  ${vscode.workspace.asRelativePath(file.path)} has no LLM nodes, caching empty result`);
+                                    await cache.setPerFile(file.path, file.content, {
+                                        nodes: [],
+                                        edges: [],
+                                        llms_detected: [],
+                                        workflows: []
+                                    });
+                                }
+                            }
+                        }
+                    }
+
                     // Track completed batches for incremental updates
                     let completedBatchCount = 0;
 
@@ -559,19 +598,25 @@ export function activate(context: vscode.ExtensionContext) {
                         const chunkEnd = Math.min(chunkStart + maxConcurrency, batches.length);
                         const batchChunk = batches.slice(chunkStart, chunkEnd);
 
-                        // Process this chunk in parallel, but update graph as each completes
+                        // Process this chunk in parallel, update progress as each completes
                         const chunkPromises = batchChunk.map((batch, chunkIdx) => {
                             const batchIndex = chunkStart + chunkIdx;
                             return analyzeBatch(batch, batchIndex, batches.length, framework, metadata, cache, newGraphs)
-                                .then((batchGraph) => {
-                                    // Update graph incrementally after each batch completes
+                                .then(async (batchGraph) => {
                                     completedBatchCount++;
                                     if (batchGraph) {
-                                        const partialGraph = cache.mergeGraphs([...cachedGraphs, ...newGraphs]);
-                                        const isFirstBatch = completedBatchCount === 1 && cachedGraphs.length === 0;
-                                        webview.show(partialGraph, !isFirstBatch); // Use incremental mode after first batch
-                                        log(`✓ Incremental update: ${partialGraph.nodes.length} nodes, ${partialGraph.edges.length} edges (${completedBatchCount}/${batches.length} batches)`);
+                                        // Cache files from this batch immediately
+                                        await cacheFilesFromGraph(batch, batchGraph);
+                                        log(`✓ Cached ${batch.length} files from batch ${batchIndex + 1}`);
+
+                                        // Incremental graph update - merge all graphs so far and send to webview
+                                        const partialMerged = cache.mergeGraphs([...cachedGraphs, ...newGraphs]);
+                                        webview.updateGraph(partialMerged);
+                                        log(`✓ Updated webview with ${partialMerged.nodes.length} nodes`);
                                     }
+                                    // Update progress bar
+                                    webview.updateProgress(completedBatchCount, batches.length);
+                                    log(`✓ Progress: ${completedBatchCount}/${batches.length} batches`);
                                 });
                         });
 
@@ -655,12 +700,18 @@ export function activate(context: vscode.ExtensionContext) {
 
                                         graphs.push(fileGraph);
                                         log(`  Fallback file complete: ${fileGraph.nodes.length} nodes`);
+
+                                        // Cache successful fallback analysis immediately
+                                        if (!bypassCache) {
+                                            await cache.setPerFile(file.path, file.content, fileGraph);
+                                            log(`  Cached ${relativePath}`);
+                                        }
                                     } catch (fileError: any) {
                                         log(`  Failed to analyze ${file.path}: ${fileError.message}`);
 
                                         // Only cache failures if not in bypass mode (prevent poisoning cache during debugging)
                                         if (!bypassCache) {
-                                            log(`  ${relativePath} is unrelated to LLM workflows, caching empty result`);
+                                            log(`  ${relativePath} failed, caching empty result`);
                                             await cache.setPerFile(file.path, file.content, {
                                                 nodes: [],
                                                 edges: [],
@@ -685,47 +736,6 @@ export function activate(context: vscode.ExtensionContext) {
                         }
                     }
 
-                    // Cache each newly analyzed file individually
-                    log(`\n✓ Caching ${filesToAnalyze.length} newly analyzed files...`);
-                    for (const file of filesToAnalyze) {
-                        // Find the graph that contains nodes from this file
-                        const fileGraph = newGraphs.find(g => g.nodes.some((n: any) => n.source?.file === file.path));
-                        if (fileGraph) {
-                            // Extract only nodes/edges for this specific file
-                            const fileNodes = fileGraph.nodes.filter((n: any) => n.source?.file === file.path);
-                            const fileNodeIds = new Set(fileNodes.map((n: any) => n.id));
-                            const fileEdges = fileGraph.edges.filter((e: any) =>
-                                fileNodeIds.has(e.source) && fileNodeIds.has(e.target)
-                            );
-
-                            const isolatedGraph = {
-                                nodes: fileNodes,
-                                edges: fileEdges,
-                                llms_detected: fileGraph.llms_detected || [],
-                                workflows: fileGraph.workflows || []
-                            };
-
-                            // Only cache if not in bypass mode
-                            if (!bypassCache) {
-                                await cache.setPerFile(file.path, file.content, isolatedGraph);
-                            }
-                        } else {
-                            // File produced no nodes (rejected by LLM or no LLM usage)
-                            // Only cache empty result if not in bypass mode
-                            if (!bypassCache) {
-                                log(`  ${vscode.workspace.asRelativePath(file.path)} is unrelated to LLM workflows, caching empty result`);
-                                await cache.setPerFile(file.path, file.content, {
-                                    nodes: [],
-                                    edges: [],
-                                    llms_detected: [],
-                                    workflows: []
-                                });
-                            } else {
-                                log(`  ${vscode.workspace.asRelativePath(file.path)} has no LLM nodes (not caching due to bypass mode)`);
-                            }
-                        }
-                    }
-
                     // Calculate and log duration
                     const duration = Date.now() - startTime;
                     const minutes = Math.floor(duration / 60000);
@@ -741,17 +751,15 @@ export function activate(context: vscode.ExtensionContext) {
             const graph = cache.mergeGraphs([...cachedGraphs, ...newGraphs]);
             log(`\n✓ Final graph: ${cachedGraphs.length} cached + ${newGraphs.length} new = ${graph.nodes.length} nodes, ${graph.edges.length} edges`);
 
-
-            // Show final graph (use incremental mode if we've already shown something)
-            const shouldUseIncrementalMode = cachedGraphs.length > 0 || filesToAnalyze.length > 0;
-
             if (graph.nodes.length === 0 && graph.edges.length === 0) {
                 vscode.window.showWarningMessage(
                     'No workflows detected. Files may have been rejected by the LLM or contain no LLM usage.'
                 );
                 log('⚠️  Final graph is empty - all files rejected or contain no LLM usage');
             }
-            webview.show(graph, shouldUseIncrementalMode);
+
+            // Single show() at end with complete graph (no loading indicator)
+            webview.show(graph);
         } catch (error: any) {
             log(`ERROR: ${error.message}`);
             log(`Status: ${error.response?.status}`);
@@ -815,8 +823,8 @@ export function activate(context: vscode.ExtensionContext) {
             const allGraphs = await cache.getAllCachedGraphs();
             const mergedGraph = cache.mergeGraphs(allGraphs);
 
-            // Update webview incrementally
-            webview.show(mergedGraph, true); // true = incremental update
+            // Update webview with merged graph
+            webview.show(mergedGraph);
             webview.notifyAnalysisComplete(true);
 
             log(`✓ Graph updated: ${mergedGraph.nodes.length} nodes, ${mergedGraph.edges.length} edges`);
@@ -827,7 +835,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('aiworkflowviz.visualizeWorkspace', async () => {
+        vscode.commands.registerCommand('codag.visualizeWorkspace', async () => {
             await analyzeWorkspace(false);
         })
     );

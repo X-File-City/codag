@@ -4,12 +4,14 @@ import { WorkflowGraph } from '../api';
 import { ViewState } from './types';
 import { filterToExpandedNodes, filterToExpandedWorkflows } from './filter-utils';
 import { filterOrphanedNodes } from './graph-filter';
+import { TYPE_SYMBOLS, createNodeLink, formatSharedNodes } from './compact-formatter';
 
 interface NodeQueryInput {
     nodeIds?: string[];
     workflowName?: string;
     nodeType?: string;
     connectedTo?: string;
+    shared?: boolean;  // Filter to nodes appearing in multiple workflows
     includeCodeSnippets?: boolean;
 }
 
@@ -98,6 +100,17 @@ class NodeQueryTool implements vscode.LanguageModelTool<NodeQueryInput> {
                 nodes = nodes.filter(n => connectedNodeIds.has(n.id));
             }
 
+            // Filter to shared nodes (appear in multiple workflows)
+            if (input.shared) {
+                const nodeWorkflowCount = new Map<string, number>();
+                graph.workflows.forEach(wf => {
+                    wf.nodeIds.forEach(id => {
+                        nodeWorkflowCount.set(id, (nodeWorkflowCount.get(id) || 0) + 1);
+                    });
+                });
+                nodes = nodes.filter(n => (nodeWorkflowCount.get(n.id) || 0) > 1);
+            }
+
             if (nodes.length === 0) {
                 return new vscode.LanguageModelToolResult([
                     new vscode.LanguageModelTextPart('No nodes found matching the query criteria.')
@@ -115,55 +128,51 @@ class NodeQueryTool implements vscode.LanguageModelTool<NodeQueryInput> {
                 beforeMap.get(edge.target)!.push(edge.source);
             });
 
-            // Helper to create clickable node link
-            const createNodeLink = (nodeId: string): string => {
-                const node = filteredGraph.nodes.find(n => n.id === nodeId);
-                if (!node) return nodeId;
-                const commandUri = `command:aiworkflowviz.focusNode?${encodeURIComponent(JSON.stringify([nodeId, node.label]))}`;
-                return `[${node.label}](${commandUri} "${node.label} (${node.type})")`;
-            };
+            // Use compact format for shared nodes
+            if (input.shared) {
+                return new vscode.LanguageModelToolResult([
+                    new vscode.LanguageModelTextPart(formatSharedNodes(nodes, graph))
+                ]);
+            }
 
-            // Build response
+            // Build compact response
             const parts: string[] = [];
-            parts.push(`## Query Results: ${nodes.length} node${nodes.length !== 1 ? 's' : ''}\n`);
+            parts.push(`Query: ${nodes.length} node${nodes.length !== 1 ? 's' : ''}`);
+            parts.push('');
 
             for (const node of nodes) {
-                parts.push(`### ${createNodeLink(node.id)} (\`${node.type}\`)\n`);
-
-                if (node.source) {
-                    parts.push(`- **File:** \`${node.source.file}\``);
-                    parts.push(`- **Location:** ${node.source.function} at line ${node.source.line}`);
-                }
+                const sym = TYPE_SYMBOLS[node.type] || '□';
+                const link = createNodeLink(node.id, node.label);
+                const location = node.source ? `→ ${node.source.file}:${node.source.line}` : '';
 
                 // Find which workflow(s) this node belongs to
                 const nodeWorkflows = graph.workflows.filter(wf => wf.nodeIds.includes(node.id));
-                if (nodeWorkflows.length > 0) {
-                    const workflowNames = nodeWorkflows.map(wf => wf.name).join(', ');
-                    parts.push(`- **Workflow:** ${workflowNames}`);
-                }
+                const workflowInfo = nodeWorkflows.length > 0 ? ` ⟵ ${nodeWorkflows.map(wf => wf.name).join(', ')}` : '';
 
-                // Show adjacency
+                parts.push(`${sym} ${link} ${location}${workflowInfo}`);
+
+                // Show adjacency on next line if present
                 const before = beforeMap.get(node.id) || [];
-                if (before.length > 0) {
-                    const beforeLinks = before.map(createNodeLink);
-                    parts.push(`- **Preceded by:** ${beforeLinks.join(', ')}`);
-                }
-
                 const after = afterMap.get(node.id) || [];
-                if (after.length > 0) {
-                    const afterLinks = after.map(createNodeLink);
-                    parts.push(`- **Followed by:** ${afterLinks.join(', ')}`);
-                }
 
-                // Include code snippet if requested
-                if (input.includeCodeSnippets && node.source) {
-                    const snippet = await this.extractCodeSnippet(node.source.file, node.source.line);
-                    if (snippet) {
-                        parts.push(`- **Code Context:**\n\`\`\`\n${snippet}\n\`\`\``);
+                if (before.length > 0 || after.length > 0) {
+                    const adjacency: string[] = [];
+                    if (before.length > 0) {
+                        const beforeLinks = before.map(id => {
+                            const n = filteredGraph.nodes.find(n => n.id === id);
+                            return n ? createNodeLink(id, n.label) : id;
+                        });
+                        adjacency.push(`← ${beforeLinks.join(', ')}`);
                     }
+                    if (after.length > 0) {
+                        const afterLinks = after.map(id => {
+                            const n = filteredGraph.nodes.find(n => n.id === id);
+                            return n ? createNodeLink(id, n.label) : id;
+                        });
+                        adjacency.push(`→ ${afterLinks.join(', ')}`);
+                    }
+                    parts.push(`   ${adjacency.join(' | ')}`);
                 }
-
-                parts.push('');
             }
 
             return new vscode.LanguageModelToolResult([
@@ -175,27 +184,6 @@ class NodeQueryTool implements vscode.LanguageModelTool<NodeQueryInput> {
             return new vscode.LanguageModelToolResult([
                 new vscode.LanguageModelTextPart(`Error querying nodes: ${error.message}`)
             ]);
-        }
-    }
-
-    private async extractCodeSnippet(filePath: string, line: number, contextLines: number = 3): Promise<string | null> {
-        try {
-            const uri = vscode.Uri.file(filePath);
-            const document = await vscode.workspace.openTextDocument(uri);
-
-            const startLine = Math.max(0, line - contextLines - 1);
-            const endLine = Math.min(document.lineCount - 1, line + contextLines);
-
-            const lines: string[] = [];
-            for (let i = startLine; i <= endLine; i++) {
-                const prefix = i === line - 1 ? '>>> ' : '    ';
-                lines.push(`${prefix}${i + 1}: ${document.lineAt(i).text}`);
-            }
-
-            return lines.join('\n');
-        } catch (error) {
-            console.warn(`Failed to extract code snippet from ${filePath}:${line}`, error);
-            return null;
         }
     }
 }

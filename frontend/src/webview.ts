@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { WorkflowGraph } from './api';
 import { ViewState } from './copilot/types';
 import { webviewStyles } from './webview/styles';
-import { getHtmlTemplate } from './webview/template';
+import { getHtmlTemplate, LoadingOptions } from './webview/template';
 import { loadScripts } from './webview/script-loader';
 import { getNodeIcon } from './webview/icons';
 import { snapToGrid, intersectRect, colorFromString } from './webview/utils';
@@ -16,6 +16,13 @@ export class WebviewManager {
     };
 
     constructor(private context: vscode.ExtensionContext) {}
+
+    private getIconPath() {
+        return {
+            light: vscode.Uri.joinPath(this.context.extensionUri, 'media', 'icon-dark.svg'),
+            dark: vscode.Uri.joinPath(this.context.extensionUri, 'media', 'icon-light.svg')
+        };
+    }
 
     getViewState(): ViewState | null {
         return this.panel ? this.viewState : null;
@@ -52,7 +59,21 @@ export class WebviewManager {
             async (message) => {
                 if (message.command === 'openFile') {
                     try {
-                        const fileUri = vscode.Uri.file(message.file);
+                        const filePath = message.file;
+
+                        // Validate file path
+                        if (!filePath || typeof filePath !== 'string') {
+                            vscode.window.showErrorMessage(`Invalid file path: ${filePath}`);
+                            return;
+                        }
+
+                        // Must be absolute path starting with /
+                        if (!filePath.startsWith('/')) {
+                            vscode.window.showErrorMessage(`File path must be absolute: ${filePath}`);
+                            return;
+                        }
+
+                        const fileUri = vscode.Uri.file(filePath);
                         const document = await vscode.workspace.openTextDocument(fileUri);
                         const editor = await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
 
@@ -64,7 +85,9 @@ export class WebviewManager {
                         vscode.window.showErrorMessage(`Could not open file: ${error.message}`);
                     }
                 } else if (message.command === 'refreshAnalysis') {
-                    vscode.commands.executeCommand('aiworkflowviz.refresh');
+                    vscode.commands.executeCommand('codag.refresh');
+                } else if (message.command === 'exportFile') {
+                    this.handleExport(message);
                 } else if (message.command === 'nodeSelected') {
                     this.updateViewState({
                         selectedNodeId: message.nodeId,
@@ -96,14 +119,16 @@ export class WebviewManager {
         // Create panel if needed
         if (!this.panel) {
             this.panel = vscode.window.createWebviewPanel(
-                'aiworkflowviz',
-                'Workflow Visualization',
+                'codag',
+                'Codag',
                 vscode.ViewColumn.Beside,
                 {
                     enableScripts: true,
                     retainContextWhenHidden: true
                 }
             );
+
+            this.panel.iconPath = this.getIconPath();
 
             this.panel.onDidDispose(() => {
                 this.panel = undefined;
@@ -127,6 +152,16 @@ export class WebviewManager {
         }
     }
 
+    updateGraph(graph: WorkflowGraph) {
+        if (this.panel) {
+            this.panel.webview.postMessage({
+                command: 'updateGraph',
+                graph,
+                preserveState: true
+            });
+        }
+    }
+
     showProgressOverlay(message: string) {
         if (this.panel) {
             this.panel.webview.postMessage({ command: 'showProgressOverlay', text: message });
@@ -139,6 +174,45 @@ export class WebviewManager {
         }
     }
 
+    private async handleExport(message: { format: string; data: string; filename: string }) {
+        const filters: { [key: string]: string[] } = {
+            svg: ['SVG Files'],
+            png: ['PNG Images'],
+            md: ['Markdown Files']
+        };
+
+        const extensions: { [key: string]: string[] } = {
+            svg: ['svg'],
+            png: ['png'],
+            md: ['md']
+        };
+
+        const uri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(message.filename),
+            filters: { [filters[message.format]?.[0] || 'All Files']: extensions[message.format] || ['*'] }
+        });
+
+        if (uri) {
+            try {
+                let content: Uint8Array;
+
+                if (message.format === 'png') {
+                    // PNG is base64 encoded
+                    const base64Data = message.data.replace(/^data:image\/png;base64,/, '');
+                    content = Buffer.from(base64Data, 'base64');
+                } else {
+                    // SVG and MD are plain text
+                    content = Buffer.from(message.data, 'utf-8');
+                }
+
+                await vscode.workspace.fs.writeFile(uri, content);
+                vscode.window.showInformationMessage(`Exported to ${uri.fsPath}`);
+            } catch (error: any) {
+                vscode.window.showErrorMessage(`Export failed: ${error.message}`);
+            }
+        }
+    }
+
     focusNode(nodeId: string) {
         if (this.panel) {
             this.panel.reveal();
@@ -146,29 +220,23 @@ export class WebviewManager {
         }
     }
 
-    show(graph: WorkflowGraph, incremental: boolean = false) {
+    show(graph: WorkflowGraph, loadingOptions?: LoadingOptions) {
         if (this.panel) {
             this.panel.reveal();
-
-            // If incremental update, send update message instead of full re-render
-            if (incremental) {
-                this.panel.webview.postMessage({
-                    command: 'updateGraph',
-                    graph: graph,
-                    preserveState: true
-                });
-                return;
-            }
+            this.panel.webview.html = this.getHtml(graph, loadingOptions);
+            return;
         } else {
             this.panel = vscode.window.createWebviewPanel(
-                'aiworkflowviz',
-                'Workflow Visualization',
+                'codag',
+                'Codag',
                 vscode.ViewColumn.Beside,
                 {
                     enableScripts: true,
                     retainContextWhenHidden: true
                 }
             );
+
+            this.panel.iconPath = this.getIconPath();
 
             this.panel.onDidDispose(() => {
                 this.panel = undefined;
@@ -177,10 +245,10 @@ export class WebviewManager {
             this.setupMessageHandlers();
         }
 
-        this.panel.webview.html = this.getHtml(graph);
+        this.panel.webview.html = this.getHtml(graph, loadingOptions);
     }
 
-    private getHtml(graph: WorkflowGraph): string {
+    private getHtml(graph: WorkflowGraph, loadingOptions?: LoadingOptions): string {
         // Properly build HTML string with safe JSON stringification
         let graphJson: string;
         try {
@@ -242,31 +310,40 @@ export class WebviewManager {
             .attr('width', '100%')
             .attr('height', '100%');
 
-        // Create zoom behavior (disable double-click zoom)
-        const zoom = d3.zoom()
-            .scaleExtent([0.1, 10])
-            .on('zoom', (event) => {
-                g.attr('transform', event.transform);
-            });
-
-        svg.call(zoom).on('dblclick.zoom', null);
-
         // Create defs for patterns and markers
         const defs = svg.append('defs');
 
-        // Pegboard dot pattern - 5px grid for precise alignment
-        const pattern = defs.append('pattern')
-            .attr('id', 'pegboard')
+        // Fine pegboard dot pattern - 5px grid for normal zoom
+        const finePattern = defs.append('pattern')
+            .attr('id', 'pegboard-fine')
             .attr('x', 0)
             .attr('y', 0)
             .attr('width', 5)
             .attr('height', 5)
             .attr('patternUnits', 'userSpaceOnUse');
 
-        pattern.append('circle')
+        finePattern.append('circle')
+            .attr('id', 'pegboard-fine-dot')
             .attr('cx', 2.5)
             .attr('cy', 2.5)
             .attr('r', 0.5)
+            .attr('fill', 'var(--vscode-editor-foreground)')
+            .attr('opacity', 0.15);
+
+        // Coarse pegboard dot pattern - 20px grid for zoomed out view
+        const coarsePattern = defs.append('pattern')
+            .attr('id', 'pegboard-coarse')
+            .attr('x', 0)
+            .attr('y', 0)
+            .attr('width', 20)
+            .attr('height', 20)
+            .attr('patternUnits', 'userSpaceOnUse');
+
+        coarsePattern.append('circle')
+            .attr('id', 'pegboard-coarse-dot')
+            .attr('cx', 10)
+            .attr('cy', 10)
+            .attr('r', 1)
             .attr('fill', 'var(--vscode-editor-foreground)')
             .attr('opacity', 0.15);
 
@@ -275,14 +352,37 @@ export class WebviewManager {
 
         // Add pegboard background inside transform group (zooms/pans with content)
         // Make it large enough to cover entire viewport at any zoom level
-        g.append('rect')
+        const pegboardBg = g.append('rect')
             .attr('x', -50000)
             .attr('y', -50000)
             .attr('width', 100000)
             .attr('height', 100000)
-            .attr('fill', 'url(#pegboard)')
+            .attr('fill', 'url(#pegboard-fine)')
             .attr('class', 'pegboard-bg')
             .lower(); // Send to back
+
+        // Create zoom behavior (disable double-click zoom)
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 10])
+            .on('zoom', (event) => {
+                g.attr('transform', event.transform);
+
+                // Adaptive pegboard: adjust opacity and pattern based on zoom
+                const k = event.transform.k;
+                const opacity = Math.min(0.15, Math.max(0.02, 0.15 * k));
+
+                if (k < 0.5) {
+                    // Switch to coarse grid at low zoom
+                    pegboardBg.attr('fill', 'url(#pegboard-coarse)');
+                    d3.select('#pegboard-coarse-dot').attr('opacity', opacity);
+                } else {
+                    // Use fine grid at normal zoom
+                    pegboardBg.attr('fill', 'url(#pegboard-fine)');
+                    d3.select('#pegboard-fine-dot').attr('opacity', opacity);
+                }
+            });
+
+        svg.call(zoom).on('dblclick.zoom', null);
 
         // Arrow markers
         defs.append('marker')
@@ -648,7 +748,8 @@ export class WebviewManager {
             .data(edgesToRender)
             .enter()
             .append('g')
-            .attr('class', 'link-group');
+            .attr('class', 'link-group')
+            .attr('data-edge-key', d => d.source + '->' + d.target);
 
         const link = linkGroup.append('path')
             .attr('class', d => d.isCriticalPath ? 'link critical-path' : 'link')
@@ -660,7 +761,8 @@ export class WebviewManager {
             .data(edgesToRender)
             .enter()
             .append('g')
-            .attr('class', 'link-label-group');
+            .attr('class', 'link-label-group')
+            .attr('data-edge-key', d => d.source + '->' + d.target);
 
         const linkLabel = linkLabelGroup.append('text')
             .attr('class', 'link-label')
@@ -757,11 +859,13 @@ export class WebviewManager {
 
         // Create nodes (only those in workflows)
         const node = g.append('g')
+            .attr('class', 'nodes-container')
             .selectAll('g')
             .data(nodesToRender)
             .enter()
             .append('g')
             .attr('class', 'node')
+            .attr('data-node-id', d => d.id)
             .call(d3.drag()
                 .on('start', dragstarted)
                 .on('drag', dragged)
@@ -1259,8 +1363,8 @@ export class WebviewManager {
                     openPanel(d);
                 }
             } else {
-                // It was a drag - update minimap
-                updateMinimapViewport();
+                // It was a drag - update minimap with new node positions
+                renderMinimap();
             }
         }
 
@@ -1444,6 +1548,9 @@ export class WebviewManager {
                     const midY = (sourceNode.y + targetNode.y) / 2;
                     return 'translate(' + midX + ',' + midY + ')';
                 });
+
+            // Update minimap with new positions
+            renderMinimap();
         }
         window.formatGraph = formatGraph;
 
@@ -1538,7 +1645,7 @@ export class WebviewManager {
 
         // Attach tooltip listeners to all control buttons
         document.querySelectorAll('#controls button').forEach((btn, index) => {
-            const tooltips = ['Zoom In', 'Zoom Out', 'Fit to Screen', 'Expand/Collapse All Workflows', 'Reset Layout', 'Reanalyze Entire Workspace'];
+            const tooltips = ['Zoom In', 'Zoom Out', 'Fit to Screen', 'Expand/Collapse All Workflows', 'Reset Layout', 'Reanalyze Entire Workspace', 'Export as SVG', 'Export as PNG', 'Export as Markdown'];
             btn.addEventListener('mouseenter', (e) => showButtonTooltip(e, tooltips[index]));
             btn.addEventListener('mousemove', (e) => {
                 const tooltip = document.getElementById('buttonTooltip');
@@ -1897,7 +2004,8 @@ export class WebviewManager {
 
             if (nodeData.source) {
                 const fileName = nodeData.source.file.split('/').pop();
-                source.textContent = \`\${nodeData.source.function} in \${fileName}:\${nodeData.source.line}\`;
+                const funcName = nodeData.source.function.endsWith('()') ? nodeData.source.function : nodeData.source.function + '()';
+                source.textContent = \`\${funcName} in \${fileName}:\${nodeData.source.line}\`;
                 source.onclick = (e) => {
                     e.preventDefault();
                     vscode.postMessage({
@@ -2038,6 +2146,611 @@ export class WebviewManager {
             }
         });
 
+        // === INCREMENTAL UPDATE FUNCTIONS ===
+
+        // Capture current UI state before update
+        function captureState() {
+            return {
+                zoomTransform: d3.zoomTransform(svg.node()),
+                collapsedWorkflows: workflowGroups.filter(g => g.collapsed).map(g => g.id),
+                selectedNodeId: currentlyOpenNodeId,
+                nodePositions: new Map(currentGraphData.nodes.map(n => [n.id, { x: n.x, y: n.y, fx: n.fx, fy: n.fy }]))
+            };
+        }
+
+        // Restore UI state after update
+        function restoreState(savedState) {
+            // Restore zoom transform
+            svg.call(zoom.transform, savedState.zoomTransform);
+
+            // Restore collapsed states
+            workflowGroups.forEach(g => {
+                g.collapsed = savedState.collapsedWorkflows.includes(g.id);
+            });
+            updateGroupVisibility();
+
+            // Re-select node if it still exists
+            if (savedState.selectedNodeId) {
+                const node = currentGraphData.nodes.find(n => n.id === savedState.selectedNodeId);
+                if (node) {
+                    openPanel(node);
+                } else {
+                    closePanel();
+                }
+            }
+
+            // Update minimap viewport
+            updateMinimapViewport();
+        }
+
+        // Apply incremental DOM updates using D3 data-join pattern
+        function applyIncrementalUpdate(diff, savedState) {
+            console.log('[webview] Applying incremental update:', diff);
+
+            // Preserve positions for existing nodes
+            currentGraphData.nodes.forEach(n => {
+                const pos = savedState.nodePositions.get(n.id);
+                if (pos) {
+                    n.x = pos.x;
+                    n.y = pos.y;
+                    n.fx = pos.fx;
+                    n.fy = pos.fy;
+                    originalPositions.set(n.id, { x: n.x, y: n.y });
+                }
+            });
+
+            // Layout new nodes using Dagre
+            if (diff.nodes.added.length > 0) {
+                layoutNewNodes(diff.nodes.added);
+            }
+
+            // === REMOVE NODES ===
+            diff.nodes.removed.forEach(nodeId => {
+                g.select('.node[data-node-id="' + nodeId + '"]').remove();
+            });
+
+            // === UPDATE EXISTING NODES ===
+            diff.nodes.updated.forEach(updatedNode => {
+                const nodeEl = g.select('.node[data-node-id="' + updatedNode.id + '"]');
+                if (!nodeEl.empty()) {
+                    // Update label
+                    nodeEl.select('.node-title').text(updatedNode.label);
+
+                    // Update node classes for entry/exit/critical styling
+                    const nodeRect = nodeEl.select('.node-background');
+                    nodeRect.classed('entry-point', updatedNode.isEntryPoint || false);
+                    nodeRect.classed('exit-point', updatedNode.isExitPoint || false);
+                    nodeRect.classed('critical-path', updatedNode.isCriticalPath || false);
+                }
+            });
+
+            // === ADD NEW NODES ===
+            diff.nodes.added.forEach(newNode => {
+                renderNode(newNode);
+            });
+
+            // === REMOVE EDGES ===
+            diff.edges.removed.forEach(edge => {
+                const edgeKey = edge.source + '->' + edge.target;
+                // Remove from both path and label containers
+                g.select('.edge-paths-container .link-group[data-edge-key="' + edgeKey + '"]').remove();
+                g.select('.edge-labels-container .link-label-group[data-edge-key="' + edgeKey + '"]').remove();
+            });
+
+            // === UPDATE EXISTING EDGES ===
+            diff.edges.updated.forEach(updatedEdge => {
+                const edgeKey = updatedEdge.source + '->' + updatedEdge.target;
+                const edgeEl = g.select('.edge-paths-container .link-group[data-edge-key="' + edgeKey + '"]');
+                const labelEl = g.select('.edge-labels-container .link-label-group[data-edge-key="' + edgeKey + '"]');
+
+                if (!edgeEl.empty()) {
+                    // Update critical path styling
+                    edgeEl.select('.link')
+                        .classed('critical-path', updatedEdge.isCriticalPath || false);
+                }
+
+                if (!labelEl.empty()) {
+                    // Update label text
+                    labelEl.select('.link-label').text(updatedEdge.label || '');
+                }
+            });
+
+            // === ADD NEW EDGES ===
+            diff.edges.added.forEach(newEdge => {
+                renderEdge(newEdge);
+            });
+
+            // Update all edge paths (positions may have changed)
+            updateAllEdgePaths();
+
+            // Recalculate bounds for workflows that need it (AFTER nodes have positions)
+            recalculateWorkflowBounds(workflowGroups);
+
+            // Update workflow group DOM elements (bounds may have changed)
+            updateWorkflowGroups(workflowGroups);
+
+            // Re-render minimap with updated data
+            renderMinimap();
+        }
+
+        // Layout new nodes using Dagre within their workflow
+        function layoutNewNodes(newNodes) {
+            // Group new nodes by workflow
+            const nodesByWorkflow = new Map();
+            newNodes.forEach(newNode => {
+                const workflow = workflowGroups.find(g => g.nodes.includes(newNode.id));
+                const wfId = workflow ? workflow.id : '__orphan__';
+                if (!nodesByWorkflow.has(wfId)) {
+                    nodesByWorkflow.set(wfId, { workflow, nodes: [] });
+                }
+                nodesByWorkflow.get(wfId).nodes.push(newNode);
+            });
+
+            // Track vertical offset for positioning multiple workflows
+            let workflowYOffset = 0;
+
+            nodesByWorkflow.forEach(({ workflow, nodes: wfNewNodes }) => {
+                if (!workflow) {
+                    // Orphan nodes - stack vertically
+                    const existingYs = currentGraphData.nodes
+                        .filter(n => n.y !== undefined && !isNaN(n.y))
+                        .map(n => n.y);
+                    let offsetY = existingYs.length > 0 ? Math.max(...existingYs) + 150 : 0;
+
+                    wfNewNodes.forEach(n => {
+                        n.x = snapToGrid(200);
+                        n.y = snapToGrid(offsetY);
+                        n.fx = n.x;
+                        n.fy = n.y;
+                        offsetY += 150;
+                        originalPositions.set(n.id, { x: n.x, y: n.y });
+                    });
+                    return;
+                }
+
+                // Check if workflow has ANY existing positioned nodes
+                const existingPositionedNodes = workflow.nodes
+                    .map(id => currentGraphData.nodes.find(n => n.id === id))
+                    .filter(n => n && n.x !== undefined && !isNaN(n.x));
+
+                if (existingPositionedNodes.length === 0) {
+                    // ALL nodes are new - run full dagre layout for this workflow
+                    const dagreGraph = new dagre.graphlib.Graph();
+                    dagreGraph.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 100 });
+                    dagreGraph.setDefaultEdgeLabel(() => ({}));
+
+                    // Add all workflow nodes
+                    workflow.nodes.forEach(nodeId => {
+                        dagreGraph.setNode(nodeId, { width: 140, height: 70 });
+                    });
+
+                    // Add edges within workflow
+                    currentGraphData.edges.forEach(edge => {
+                        if (workflow.nodes.includes(edge.source) && workflow.nodes.includes(edge.target)) {
+                            dagreGraph.setEdge(edge.source, edge.target);
+                        }
+                    });
+
+                    dagre.layout(dagreGraph);
+
+                    // Apply positions to all nodes in this workflow (not just new ones)
+                    workflow.nodes.forEach(nodeId => {
+                        const node = currentGraphData.nodes.find(n => n.id === nodeId);
+                        const pos = dagreGraph.node(nodeId);
+                        if (node && pos) {
+                            node.x = snapToGrid(pos.x);
+                            node.y = snapToGrid(pos.y + workflowYOffset);
+                            node.fx = node.x;
+                            node.fy = node.y;
+                            originalPositions.set(node.id, { x: node.x, y: node.y });
+                        }
+                    });
+
+                    // Calculate workflow height for next workflow offset
+                    const wfNodes = workflow.nodes
+                        .map(id => currentGraphData.nodes.find(n => n.id === id))
+                        .filter(n => n && n.y !== undefined);
+                    if (wfNodes.length > 0) {
+                        const maxY = Math.max(...wfNodes.map(n => n.y));
+                        workflowYOffset = maxY + 200; // Add padding between workflows
+                    }
+                } else if (workflow.bounds) {
+                    // Workflow has existing positioned nodes - use mini-dagre to insert new nodes
+                    const dagreGraph = new dagre.graphlib.Graph();
+                    dagreGraph.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 100 });
+                    dagreGraph.setDefaultEdgeLabel(() => ({}));
+
+                    // Add all workflow nodes (existing ones get fixed positions)
+                    workflow.nodes.forEach(nodeId => {
+                        const existingNode = currentGraphData.nodes.find(n => n.id === nodeId);
+                        if (existingNode) {
+                            if (existingNode.x !== undefined && existingNode.y !== undefined) {
+                                dagreGraph.setNode(nodeId, {
+                                    width: 140, height: 70,
+                                    x: existingNode.x, y: existingNode.y
+                                });
+                            } else {
+                                dagreGraph.setNode(nodeId, { width: 140, height: 70 });
+                            }
+                        }
+                    });
+
+                    // Add edges within workflow
+                    currentGraphData.edges.forEach(edge => {
+                        if (workflow.nodes.includes(edge.source) && workflow.nodes.includes(edge.target)) {
+                            dagreGraph.setEdge(edge.source, edge.target);
+                        }
+                    });
+
+                    dagre.layout(dagreGraph);
+
+                    // Apply positions only to new nodes
+                    wfNewNodes.forEach(newNode => {
+                        const pos = dagreGraph.node(newNode.id);
+                        if (pos) {
+                            newNode.x = snapToGrid(pos.x);
+                            newNode.y = snapToGrid(pos.y);
+                            newNode.fx = newNode.x;
+                            newNode.fy = newNode.y;
+                            originalPositions.set(newNode.id, { x: newNode.x, y: newNode.y });
+                        }
+                    });
+                } else {
+                    // Workflow exists but has no bounds yet and no positioned nodes
+                    // Run full dagre layout
+                    const dagreGraph = new dagre.graphlib.Graph();
+                    dagreGraph.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 100 });
+                    dagreGraph.setDefaultEdgeLabel(() => ({}));
+
+                    workflow.nodes.forEach(nodeId => {
+                        dagreGraph.setNode(nodeId, { width: 140, height: 70 });
+                    });
+
+                    currentGraphData.edges.forEach(edge => {
+                        if (workflow.nodes.includes(edge.source) && workflow.nodes.includes(edge.target)) {
+                            dagreGraph.setEdge(edge.source, edge.target);
+                        }
+                    });
+
+                    dagre.layout(dagreGraph);
+
+                    workflow.nodes.forEach(nodeId => {
+                        const node = currentGraphData.nodes.find(n => n.id === nodeId);
+                        const pos = dagreGraph.node(nodeId);
+                        if (node && pos) {
+                            node.x = snapToGrid(pos.x);
+                            node.y = snapToGrid(pos.y + workflowYOffset);
+                            node.fx = node.x;
+                            node.fy = node.y;
+                            originalPositions.set(node.id, { x: node.x, y: node.y });
+                        }
+                    });
+
+                    const wfNodes = workflow.nodes
+                        .map(id => currentGraphData.nodes.find(n => n.id === id))
+                        .filter(n => n && n.y !== undefined);
+                    if (wfNodes.length > 0) {
+                        const maxY = Math.max(...wfNodes.map(n => n.y));
+                        workflowYOffset = maxY + 200;
+                    }
+                }
+            });
+        }
+
+        // Recalculate bounds for workflow groups that don't have them
+        function recalculateWorkflowBounds(groups) {
+            groups.forEach(group => {
+                if (group.bounds) return; // Already has bounds
+
+                const allGroupNodes = currentGraphData.nodes.filter(n => group.nodes.includes(n.id));
+                if (allGroupNodes.length < 3) return;
+
+                // Calculate bounds from current node positions
+                const xs = allGroupNodes.map(n => n.x).filter(x => x !== undefined && !isNaN(x));
+                const ys = allGroupNodes.map(n => n.y).filter(y => y !== undefined && !isNaN(y));
+
+                if (xs.length === 0 || ys.length === 0) return;
+
+                group.bounds = {
+                    minX: Math.min(...xs) - 90,
+                    maxX: Math.max(...xs) + 90,
+                    minY: Math.min(...ys) - 75,
+                    maxY: Math.max(...ys) + 55
+                };
+                group.centerX = (group.bounds.minX + group.bounds.maxX) / 2;
+                group.centerY = (group.bounds.minY + group.bounds.maxY) / 2;
+            });
+        }
+
+        // Update workflow group DOM elements during incremental updates
+        function updateWorkflowGroups(groups) {
+            const groupsWithBounds = groups.filter(grp => grp.bounds && grp.nodes.length >= 3);
+            const groupContainer = g.select('.groups');
+
+            // Get existing group IDs in DOM
+            const existingGroupIds = new Set();
+            groupContainer.selectAll('.workflow-group').each(function(d) {
+                if (d && d.id) existingGroupIds.add(d.id);
+            });
+
+            // Update existing groups
+            groupContainer.selectAll('.workflow-group').each(function(d) {
+                const group = groupsWithBounds.find(grp => grp.id === d.id);
+                if (!group) {
+                    // Group no longer exists - remove it
+                    d3.select(this).remove();
+                    return;
+                }
+
+                // Update data binding
+                d3.select(this).datum(group);
+
+                // Update bounds
+                d3.select(this).select('.group-background')
+                    .attr('x', group.bounds.minX)
+                    .attr('y', group.bounds.minY)
+                    .attr('width', group.bounds.maxX - group.bounds.minX)
+                    .attr('height', group.bounds.maxY - group.bounds.minY);
+
+                d3.select(this).select('.group-title-expanded')
+                    .attr('x', group.bounds.minX + 40)
+                    .attr('y', group.bounds.minY + 24)
+                    .text(group.name + ' (' + group.nodes.length + ' nodes)');
+
+                // Update collapse button position
+                d3.select(this).select('.group-collapse-btn rect')
+                    .attr('x', group.bounds.minX + 10)
+                    .attr('y', group.bounds.minY + 8);
+                d3.select(this).select('.group-collapse-btn text')
+                    .attr('x', group.bounds.minX + 22)
+                    .attr('y', group.bounds.minY + 24);
+            });
+
+            // Add new groups that don't exist in DOM
+            const newGroups = groupsWithBounds.filter(grp => !existingGroupIds.has(grp.id));
+            if (newGroups.length > 0) {
+                const newGroupElements = groupContainer.selectAll('.workflow-group-new')
+                    .data(newGroups, d => d.id)
+                    .enter()
+                    .append('g')
+                    .attr('class', 'workflow-group')
+                    .attr('data-group-id', d => d.id);
+
+                // Group background rectangle
+                newGroupElements.append('rect')
+                    .attr('class', 'group-background')
+                    .attr('x', d => d.bounds.minX)
+                    .attr('y', d => d.bounds.minY)
+                    .attr('width', d => d.bounds.maxX - d.bounds.minX)
+                    .attr('height', d => d.bounds.maxY - d.bounds.minY)
+                    .attr('rx', 12)
+                    .style('fill', d => d.color)
+                    .style('fill-opacity', 0.1)
+                    .style('stroke', d => d.color)
+                    .style('stroke-width', '3px')
+                    .style('stroke-dasharray', '8,4')
+                    .style('opacity', d => d.collapsed ? 0 : 1)
+                    .style('pointer-events', 'none');
+
+                // Title inside expanded group
+                newGroupElements.append('text')
+                    .attr('class', 'group-title-expanded')
+                    .attr('x', d => d.bounds.minX + 40)
+                    .attr('y', d => d.bounds.minY + 24)
+                    .style('fill', d => d.color)
+                    .style('font-size', '13px')
+                    .style('font-weight', '700')
+                    .style('display', d => d.collapsed ? 'none' : 'block')
+                    .style('pointer-events', 'none')
+                    .text(d => d.name + ' (' + d.nodes.length + ' nodes)');
+
+                // Collapse button
+                const collapseBtn = newGroupElements.append('g')
+                    .attr('class', 'group-collapse-btn')
+                    .style('display', d => d.collapsed ? 'none' : 'block')
+                    .style('cursor', 'pointer')
+                    .on('click', function(event, d) {
+                        event.stopPropagation();
+                        d.collapsed = true;
+                        updateGroupVisibility();
+                    });
+
+                collapseBtn.append('rect')
+                    .attr('x', d => d.bounds.minX + 10)
+                    .attr('y', d => d.bounds.minY + 8)
+                    .attr('width', 24)
+                    .attr('height', 24)
+                    .attr('rx', 4)
+                    .style('fill', d => d.color)
+                    .style('fill-opacity', 0.2)
+                    .style('stroke', d => d.color)
+                    .style('stroke-width', '2px');
+
+                collapseBtn.append('text')
+                    .attr('x', d => d.bounds.minX + 22)
+                    .attr('y', d => d.bounds.minY + 24)
+                    .attr('text-anchor', 'middle')
+                    .style('fill', d => d.color)
+                    .style('font-size', '16px')
+                    .style('font-weight', 'bold')
+                    .style('pointer-events', 'none')
+                    .text('−');
+            }
+        }
+
+        // Render a single node (for incremental updates)
+        function renderNode(nodeData) {
+            const typeColors = {
+                'trigger': '#FFB74D',
+                'llm': '#64B5F6',
+                'tool': '#81C784',
+                'decision': '#BA68C8',
+                'integration': '#FF8A65',
+                'memory': '#4DB6AC',
+                'parser': '#A1887F',
+                'output': '#90A4AE'
+            };
+
+            // Append to nodes-container
+            const nodeGroup = g.select('.nodes-container').append('g')
+                .datum(nodeData)
+                .attr('class', 'node')
+                .attr('data-node-id', nodeData.id)
+                .attr('transform', 'translate(' + nodeData.x + ',' + nodeData.y + ')')
+                .call(d3.drag()
+                    .on('start', dragstarted)
+                    .on('drag', dragged)
+                    .on('end', dragended));
+
+            // Background fill rect
+            nodeGroup.append('rect')
+                .attr('width', 140)
+                .attr('height', 70)
+                .attr('x', -70)
+                .attr('y', -35)
+                .attr('rx', 4)
+                .style('fill', 'var(--vscode-editor-background)')
+                .style('stroke', 'none');
+
+            // Colored header background
+            nodeGroup.append('path')
+                .attr('class', 'node-header')
+                .attr('d', 'M -65,-35 L 65,-35 A 4,4 0 0,1 69,-31 L 69,-11 L -69,-11 L -69,-31 A 4,4 0 0,1 -65,-35 Z')
+                .style('fill', typeColors[nodeData.type] || '#90A4AE')
+                .style('opacity', 0.5)
+                .style('stroke', 'none');
+
+            // Border rect with entry/exit/critical classes
+            const classes = [];
+            if (nodeData.isCriticalPath) classes.push('critical-path');
+            if (nodeData.isEntryPoint) classes.push('entry-point');
+            if (nodeData.isExitPoint) classes.push('exit-point');
+
+            nodeGroup.append('rect')
+                .attr('width', 140)
+                .attr('height', 70)
+                .attr('x', -70)
+                .attr('y', -35)
+                .attr('rx', 4)
+                .attr('class', classes.join(' '))
+                .style('fill', 'none')
+                .style('pointer-events', 'all');
+
+            // Title text
+            nodeGroup.append('text')
+                .attr('class', 'node-title')
+                .attr('y', -21)
+                .attr('dominant-baseline', 'middle')
+                .text(nodeData.label);
+
+            // Icon
+            nodeGroup.append('g')
+                .attr('class', 'node-icon ' + nodeData.type)
+                .attr('transform', 'translate(44, 10) scale(0.8)')
+                .html(getIcon(nodeData.type));
+
+            // Type label
+            nodeGroup.append('text')
+                .attr('class', 'node-type')
+                .text(nodeData.type.toUpperCase())
+                .attr('x', 40)
+                .attr('y', 21)
+                .attr('dominant-baseline', 'middle')
+                .style('text-anchor', 'end');
+
+            // Selection indicator (camera corners) - hidden by default
+            nodeGroup.append('rect')
+                .attr('class', 'selection-indicator')
+                .attr('x', -75)
+                .attr('y', -40)
+                .attr('width', 150)
+                .attr('height', 80)
+                .attr('rx', 6)
+                .style('fill', 'none')
+                .style('stroke', '#00d9ff')
+                .style('stroke-width', '3px')
+                .style('stroke-dasharray', '10,5')
+                .style('display', 'none');
+        }
+
+        // Render a single edge (for incremental updates)
+        function renderEdge(edgeData) {
+            const sourceNode = currentGraphData.nodes.find(n => n.id === edgeData.source);
+            const targetNode = currentGraphData.nodes.find(n => n.id === edgeData.target);
+
+            if (!sourceNode || !targetNode) return;
+
+            const edgeKey = edgeData.source + '->' + edgeData.target;
+            const pathClass = 'link' + (edgeData.isCriticalPath ? ' critical-path' : '');
+
+            // Create edge group in edge-paths-container
+            const edgeGroup = g.select('.edge-paths-container').append('g')
+                .datum(edgeData)
+                .attr('class', 'link-group')
+                .attr('data-edge-key', edgeKey);
+
+            // Edge path
+            edgeGroup.append('path')
+                .attr('class', pathClass)
+                .attr('d', generateEdgePath(edgeData, sourceNode, targetNode, 140, 70))
+                .attr('marker-end', 'url(#arrowhead)');
+
+            // Hover path (wider for easier interaction)
+            edgeGroup.append('path')
+                .attr('class', 'link-hover')
+                .attr('d', generateEdgePath(edgeData, sourceNode, targetNode, 140, 70))
+                .on('mouseover', function(event) {
+                    const transform = d3.zoomTransform(svg.node());
+                    edgeGroup.select('.link').style('stroke-width', (3 / transform.k) + 'px');
+                    edgeGroup.select('.link-label').style('font-weight', 'bold');
+                })
+                .on('mouseout', function() {
+                    const transform = d3.zoomTransform(svg.node());
+                    edgeGroup.select('.link').style('stroke-width', (2 / transform.k) + 'px');
+                    edgeGroup.select('.link-label').style('font-weight', 'normal');
+                });
+
+            // Edge label - add to separate edge-labels-container (for z-order)
+            const midX = (sourceNode.x + targetNode.x) / 2;
+            const midY = (sourceNode.y + targetNode.y) / 2;
+
+            const labelGroup = g.select('.edge-labels-container').append('g')
+                .datum(edgeData)
+                .attr('class', 'link-label-group')
+                .attr('data-edge-key', edgeKey)
+                .attr('transform', 'translate(' + midX + ',' + midY + ')');
+
+            labelGroup.append('rect')
+                .attr('class', 'link-label-bg');
+
+            labelGroup.append('text')
+                .attr('class', 'link-label')
+                .text(edgeData.label || '');
+        }
+
+        // Update all edge paths (after node positions change)
+        function updateAllEdgePaths() {
+            g.selectAll('.link-group').each(function(edgeData) {
+                const sourceNode = getNodeOrCollapsedGroup(edgeData.source);
+                const targetNode = getNodeOrCollapsedGroup(edgeData.target);
+                const targetWidth = targetNode?.isCollapsedGroup ? 260 : 140;
+                const targetHeight = targetNode?.isCollapsedGroup ? 130 : 70;
+
+                const path = generateEdgePath(edgeData, sourceNode, targetNode, targetWidth, targetHeight);
+
+                d3.select(this).select('.link').attr('d', path);
+                d3.select(this).select('.link-hover').attr('d', path);
+
+                // Update label position
+                if (sourceNode && targetNode) {
+                    const midX = (sourceNode.x + targetNode.x) / 2;
+                    const midY = (sourceNode.y + targetNode.y) / 2;
+                    d3.select(this).select('.link-label-group')
+                        .attr('transform', 'translate(' + midX + ',' + midY + ')');
+                }
+            });
+        }
+
         // Listen for messages from the extension
         window.addEventListener('message', event => {
             const message = event.data;
@@ -2107,28 +2820,63 @@ export class WebviewManager {
                     break;
 
                 case 'updateGraph':
-                    // Incremental graph update - preserve zoom/pan state
                     if (message.preserveState && message.graph) {
-                        // Save current transform state
-                        const currentTransform = d3.zoomTransform(svg.node());
+                        console.log('[webview] updateGraph: applying incremental update');
 
-                        // Update data with new graph
+                        // Capture current UI state
+                        const savedState = captureState();
+
+                        // Compute diff between old and new graph
+                        const diff = computeGraphDiff(currentGraphData, message.graph);
+
+                        if (!hasDiff(diff)) {
+                            console.log('[webview] updateGraph: no changes detected');
+                            break;
+                        }
+
+                        // Update the graph data
                         currentGraphData = message.graph;
 
-                        // Re-render graph
-                        renderGraph();
+                        // Re-detect workflow groups (may have changed)
+                        const newWorkflowGroups = detectWorkflowGroups(currentGraphData);
 
-                        // Restore transform
-                        svg.call(zoom.transform, currentTransform);
+                        // Merge workflow collapse states from old groups
+                        newWorkflowGroups.forEach(newG => {
+                            const oldG = workflowGroups.find(og => og.id === newG.id);
+                            if (oldG) {
+                                newG.collapsed = oldG.collapsed;
+                                // Only preserve bounds if nodes haven't changed
+                                const oldNodes = oldG.nodes.slice().sort();
+                                const newNodes = newG.nodes.slice().sort();
+                                const nodesChanged = JSON.stringify(oldNodes) !== JSON.stringify(newNodes);
+                                if (oldG.bounds && !nodesChanged) {
+                                    newG.bounds = oldG.bounds;
+                                    newG.centerX = oldG.centerX;
+                                    newG.centerY = oldG.centerY;
+                                }
+                            }
+                        });
 
-                        // Show brief success indicator
-                        indicator.className = 'loading-indicator success';
-                        iconSpan.textContent = '✓';
-                        textSpan.textContent = 'Graph updated';
-                        indicator.style.display = 'block';
-                        setTimeout(() => {
-                            indicator.style.display = 'none';
-                        }, 1500);
+                        workflowGroups = newWorkflowGroups;
+
+                        // Apply incremental DOM updates (includes bounds recalculation)
+                        applyIncrementalUpdate(diff, savedState);
+
+                        // Restore UI state (zoom, selection, etc.)
+                        restoreState(savedState);
+
+                        console.log('[webview] updateGraph: incremental update complete', {
+                            nodesAdded: diff.nodes.added.length,
+                            nodesRemoved: diff.nodes.removed.length,
+                            nodesUpdated: diff.nodes.updated.length,
+                            edgesAdded: diff.edges.added.length,
+                            edgesRemoved: diff.edges.removed.length
+                        });
+
+                        // Update header stats
+                        updateSnapshotStats();
+                    } else {
+                        console.log('[webview] updateGraph: no graph data or preserveState=false');
                     }
                     break;
 
@@ -2166,6 +2914,6 @@ export class WebviewManager {
         const scriptContent = loadScripts(graphJson, mainRendererScript);
 
         // Use the template to generate the full HTML
-        return getHtmlTemplate(webviewStyles, scriptContent);
+        return getHtmlTemplate(webviewStyles, scriptContent, loadingOptions);
     }
 }

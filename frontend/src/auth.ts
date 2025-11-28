@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { APIClient } from './api';
 
 export class AuthManager {
-    private static readonly TOKEN_KEY = 'aiworkflowviz.token';
+    private static readonly TOKEN_KEY = 'codag.token';
 
     constructor(
         private context: vscode.ExtensionContext,

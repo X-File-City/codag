@@ -64,7 +64,7 @@ export class WorkflowContextTool implements vscode.LanguageModelTool<WorkflowToo
         console.log('❌ [Workflow Tool] No workflow data found for file');
         return new vscode.LanguageModelToolResult([
           new vscode.LanguageModelTextPart(
-            `No workflow data found for ${filePath}. Run "AI Workflow Visualizer: Analyze Workflows" first.`
+            `No workflow data found for ${filePath}. Run "Codag: Auto-detect and Visualize" first.`
           )
         ]);
       }

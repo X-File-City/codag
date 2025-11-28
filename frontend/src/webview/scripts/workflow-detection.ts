@@ -323,5 +323,8 @@ export const workflowDetectionScript = `
             return groups;
         }
 
-        const workflowGroups = detectWorkflowGroups(currentGraphData);
+        let workflowGroups = detectWorkflowGroups(currentGraphData);
+
+        // Update stats after initial detection
+        updateSnapshotStats();
 `;

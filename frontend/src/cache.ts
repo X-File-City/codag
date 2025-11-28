@@ -39,7 +39,7 @@ export class CacheManager {
         // Use first workspace folder
         const workspaceFolder = workspaceFolders[0];
         const vscodeFolderPath = path.join(workspaceFolder.uri.fsPath, '.vscode');
-        this.cachePath = vscode.Uri.file(path.join(vscodeFolderPath, 'aiworkflowviz-cache.json'));
+        this.cachePath = vscode.Uri.file(path.join(vscodeFolderPath, 'codag-cache.json'));
 
         // Ensure .vscode directory exists
         try {
@@ -205,28 +205,29 @@ export class CacheManager {
     }
 
     /**
-     * Get most recent cached workflows (workspace-level or all files merged)
+     * Get all cached workflows merged into a single graph
      * Returns null if no cached workflows exist
      */
     async getMostRecentWorkflows(): Promise<WorkflowGraph | null> {
         await this.initPromise;
 
-        let mostRecentEntry: PerFileCacheEntry | null = null;
-        let mostRecentTimestamp = 0;
+        const allGraphs = Object.values(this.perFileCache).map(entry => entry.graph);
+        if (allGraphs.length === 0) return null;
 
-        // Find most recent cache entry (workspace or per-file)
-        for (const entry of Object.values(this.perFileCache)) {
-            if (entry.timestamp > mostRecentTimestamp) {
-                mostRecentEntry = entry;
-                mostRecentTimestamp = entry.timestamp;
-            }
-        }
+        return this.mergeGraphs(allGraphs);
+    }
 
-        return mostRecentEntry?.graph || null;
+    /**
+     * Generate a short hash prefix for a file path to ensure unique node IDs
+     */
+    private getFilePrefix(filePath: string): string {
+        // Use first 6 chars of hash for brevity but sufficient uniqueness
+        return crypto.createHash('md5').update(filePath).digest('hex').substring(0, 6);
     }
 
     /**
      * Merge multiple workflow graphs into one
+     * Prefixes node IDs with file hash to prevent collisions across files
      */
     mergeGraphs(graphs: WorkflowGraph[]): WorkflowGraph {
         if (graphs.length === 0) {
@@ -243,15 +244,41 @@ export class CacheManager {
         const mergedWorkflows = new Map<string, any>();
 
         for (const graph of graphs) {
-            // Merge nodes (deduplicate by id)
-            for (const node of graph.nodes) {
-                mergedNodes.set(node.id, node);
+            // Determine file prefix from first node's source, or use graph index
+            let filePrefix = '';
+            if (graph.nodes.length > 0 && graph.nodes[0].source?.file) {
+                filePrefix = this.getFilePrefix(graph.nodes[0].source.file);
             }
 
-            // Merge edges (deduplicate by source-target pair)
+            // Build ID mapping for this graph
+            const idMap = new Map<string, string>();
+            for (const node of graph.nodes) {
+                const originalId = node.id;
+                // Prefix ID if it doesn't already have a file-specific prefix
+                const newId = filePrefix && !originalId.includes('_') ? `${filePrefix}_${originalId}` :
+                              filePrefix ? `${filePrefix}_${originalId}` : originalId;
+                idMap.set(originalId, newId);
+            }
+
+            // Merge nodes with prefixed IDs
+            for (const node of graph.nodes) {
+                const newId = idMap.get(node.id) || node.id;
+                mergedNodes.set(newId, {
+                    ...node,
+                    id: newId
+                });
+            }
+
+            // Merge edges with remapped source/target IDs
             for (const edge of graph.edges) {
-                const edgeKey = `${edge.source}->${edge.target}`;
-                mergedEdges.set(edgeKey, edge);
+                const newSource = idMap.get(edge.source) || edge.source;
+                const newTarget = idMap.get(edge.target) || edge.target;
+                const edgeKey = `${newSource}->${newTarget}`;
+                mergedEdges.set(edgeKey, {
+                    ...edge,
+                    source: newSource,
+                    target: newTarget
+                });
             }
 
             // Merge LLMs detected
@@ -259,20 +286,26 @@ export class CacheManager {
                 llmsDetectedSet.add(llm);
             }
 
-            // Merge workflows (combine nodeIds for same ID)
+            // Merge workflows with remapped nodeIds and prefixed workflow IDs
             for (const workflow of graph.workflows || []) {
-                const existing = mergedWorkflows.get(workflow.id);
+                const workflowId = filePrefix ? `${filePrefix}_${workflow.id}` : workflow.id;
+                const remappedNodeIds = workflow.nodeIds.map((id: string) => idMap.get(id) || id);
+
+                const existing = mergedWorkflows.get(workflowId);
                 if (existing) {
                     // Merge nodeIds arrays and deduplicate
-                    const combinedNodeIds = [...new Set([...existing.nodeIds, ...workflow.nodeIds])];
-                    mergedWorkflows.set(workflow.id, {
+                    const combinedNodeIds = [...new Set([...existing.nodeIds, ...remappedNodeIds])];
+                    mergedWorkflows.set(workflowId, {
                         ...existing,
                         nodeIds: combinedNodeIds,
-                        // Keep description from first workflow or combine
                         description: existing.description || workflow.description
                     });
                 } else {
-                    mergedWorkflows.set(workflow.id, workflow);
+                    mergedWorkflows.set(workflowId, {
+                        ...workflow,
+                        id: workflowId,
+                        nodeIds: remappedNodeIds
+                    });
                 }
             }
         }

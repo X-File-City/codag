@@ -1,5 +1,5 @@
 /**
- * Centralized configuration constants for the AI Workflow Visualizer extension
+ * Centralized configuration constants for the Codag extension
  *
  * TUNING GUIDELINES:
  * - MAX_BATCH_SIZE: Number of files analyzed together (higher = fewer API calls but larger prompts)

@@ -2,7 +2,6 @@
  * Extracts workflow metadata from cached graphs for Copilot context
  */
 
-import * as vscode from 'vscode';
 import { WorkflowGraph } from '../api';
 import {
   AdjacentNodeInfo,
@@ -14,8 +13,7 @@ import {
 import { filterVisibleWorkflows } from './graph-filter';
 
 export interface MetadataOptions {
-  includeCodeSnippets?: boolean;
-  contextLines?: number;
+  // Code snippets removed - Copilot can read files directly using file:line info
 }
 
 export class WorkflowMetadataProvider {
@@ -51,34 +49,16 @@ export class WorkflowMetadataProvider {
     });
 
     // Extract adjacent node info from ALL files (not just target file)
-    let adjacentNodes: AdjacentNodeInfo[] = await Promise.all(
-      graph.nodes
-        .filter(node => node.source) // Include all files
-        .map(async node => {
-          const nodeInfo: AdjacentNodeInfo = {
-            nodeId: node.id,
-            label: node.label,
-            type: node.type,
-            beforeNodes: Array.from(beforeMap.get(node.id) || []),
-            afterNodes: Array.from(afterMap.get(node.id) || []),
-            source: node.source!
-          };
-
-          // Optionally add code snippets
-          if (options?.includeCodeSnippets && node.source) {
-            const snippet = await this.extractCodeSnippet(
-              node.source.file,
-              node.source.line,
-              options.contextLines || 5
-            );
-            if (snippet) {
-              (nodeInfo as any).codeSnippet = snippet;
-            }
-          }
-
-          return nodeInfo;
-        })
-    );
+    let adjacentNodes: AdjacentNodeInfo[] = graph.nodes
+      .filter(node => node.source) // Include all files
+      .map(node => ({
+        nodeId: node.id,
+        label: node.label,
+        type: node.type,
+        beforeNodes: Array.from(beforeMap.get(node.id) || []),
+        afterNodes: Array.from(afterMap.get(node.id) || []),
+        source: node.source!
+      }));
 
     // Prioritize visible nodes, selected node, and neighbors
     const visibleSet = new Set(visibleNodeIds || []);
@@ -180,29 +160,5 @@ export class WorkflowMetadataProvider {
       ),
       fileContext
     };
-  }
-
-  /**
-   * Extract code snippet around a specific line in a file
-   */
-  private async extractCodeSnippet(filePath: string, line: number, contextLines: number = 5): Promise<string | null> {
-    try {
-      const uri = vscode.Uri.file(filePath);
-      const document = await vscode.workspace.openTextDocument(uri);
-
-      const startLine = Math.max(0, line - contextLines - 1);
-      const endLine = Math.min(document.lineCount - 1, line + contextLines);
-
-      const lines: string[] = [];
-      for (let i = startLine; i <= endLine; i++) {
-        const prefix = i === line - 1 ? '>>> ' : '    '; // Highlight target line
-        lines.push(`${prefix}${i + 1}: ${document.lineAt(i).text}`);
-      }
-
-      return lines.join('\n');
-    } catch (error) {
-      console.warn(`Failed to extract code snippet from ${filePath}:${line}`, error);
-      return null;
-    }
   }
 }

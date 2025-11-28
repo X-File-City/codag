@@ -7,13 +7,18 @@ import { WorkflowGraph, WorkflowMetadata } from '../api';
 
 /**
  * Filters out orphaned nodes and their edges from the graph
- * Orphaned nodes are those NOT in workflow groups (connected components with LLM nodes and 3+ nodes)
- * This ensures Copilot context matches what's rendered in the webview
+ * For Copilot: Less aggressive than webview - includes all nodes connected to LLM nodes
+ * regardless of component size, so small workflows still show up
  */
 export function filterOrphanedNodes(graph: WorkflowGraph): WorkflowGraph {
     // Return empty graph if no nodes
     if (!graph.nodes || graph.nodes.length === 0) {
         return { ...graph, nodes: [], edges: [] };
+    }
+
+    // If graph is small (< 10 nodes), don't filter - show everything
+    if (graph.nodes.length < 10) {
+        return graph;
     }
 
     // Build adjacency maps for connectivity analysis
@@ -36,6 +41,11 @@ export function filterOrphanedNodes(graph: WorkflowGraph): WorkflowGraph {
     const visited = new Set<string>();
     const validNodeIds = new Set<string>();
     const llmNodes = graph.nodes.filter(n => n.type === 'llm');
+
+    // If no LLM nodes, return all nodes (user may be looking at non-LLM workflows)
+    if (llmNodes.length === 0) {
+        return graph;
+    }
 
     // Start BFS from each unvisited LLM node
     llmNodes.forEach(llmNode => {
@@ -70,10 +80,8 @@ export function filterOrphanedNodes(graph: WorkflowGraph): WorkflowGraph {
             }
         }
 
-        // Only include components with 3+ nodes (workflow groups)
-        if (component.size >= 3) {
-            component.forEach(id => validNodeIds.add(id));
-        }
+        // Include ALL components connected to LLM nodes (removed 3+ requirement)
+        component.forEach(id => validNodeIds.add(id));
     });
 
     // Filter nodes to only those in valid workflow groups

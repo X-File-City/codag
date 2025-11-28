@@ -1,4 +1,6 @@
-# AI Workflow Visualizer
+# Codag
+
+**CO**mpound **D**irected **A**cyclic **G**raphs
 
 VSCode extension that visualizes AI/LLM workflows using Gemini 2.5 Flash. Analyzes code containing LLM API calls and frameworks to generate interactive workflow graphs with critical path analysis.
 
@@ -58,15 +60,15 @@ Press F5 in VSCode to open extension development host.
 
 In the extension development window:
 
-1. **Analyze Workspace**: `CMD+Shift+P` → "AI Workflow Visualizer: Analyze Workspace"
+1. **Analyze Workspace**: `CMD+Shift+P` → "Codag: Auto-detect and Visualize"
    - Scans workspace for LLM-related files
    - Analyzes all files together as unified workflow
    - Shows analysis time in output panel
 
-2. **Visualize Current File**: `CMD+Shift+P` → "AI Workflow Visualizer: Visualize Current File"
+2. **Visualize Current File**: `CMD+Shift+P` → "Codag: Visualize Current File"
    - Analyze single file
 
-3. **Clear Cache**: `CMD+Shift+P` → "AI Workflow Visualizer: Clear Cache"
+3. **Clear Cache**: `CMD+Shift+P` → "Codag: Clear Cache"
    - Forces reanalysis on next visualization
 
 ### Graph Controls

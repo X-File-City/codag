@@ -23,13 +23,35 @@ export const webviewStyles = `
         display: flex;
         justify-content: space-between;
         align-items: center;
+        cursor: default;
     }
-    #header h1 {
-        font-size: 13px;
-        font-weight: 500;
-        margin: 0;
+    .header-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+    .codag-logo {
+        height: 24px;
+        width: auto;
         color: var(--vscode-foreground);
         opacity: 0.9;
+    }
+    .snapshot-stats {
+        display: flex;
+        align-items: center;
+        font-size: 11px;
+        color: var(--vscode-descriptionForeground);
+        gap: 4px;
+    }
+    .snapshot-stats .stat-label {
+        opacity: 0.7;
+    }
+    .snapshot-stats .stat-value {
+        color: var(--vscode-foreground);
+    }
+    .snapshot-stats .stat-divider {
+        margin: 0 4px;
+        opacity: 0.3;
     }
     #controls {
         display: flex;
@@ -75,6 +97,19 @@ export const webviewStyles = `
         background: rgba(244, 67, 54, 0.1);
         border-color: #f44336;
     }
+    .controls-divider {
+        width: 1px;
+        height: 20px;
+        background: var(--vscode-panel-border);
+        margin: 0 4px;
+    }
+    #controls button.export-btn {
+        color: #607D8B;
+    }
+    #controls button.export-btn:hover {
+        background: rgba(96, 125, 139, 0.1);
+        border-color: #607D8B;
+    }
     #controls button svg {
         width: 16px;
         height: 16px;
@@ -89,12 +124,12 @@ export const webviewStyles = `
         width: 100%;
         height: calc(100% - 36px);
     }
-    svg {
+    #graph svg {
         width: 100%;
         height: 100%;
         cursor: grab;
     }
-    svg:active {
+    #graph svg:active {
         cursor: grabbing;
     }
     .node {
@@ -259,6 +294,7 @@ export const webviewStyles = `
     .loading-icon {
         display: inline-block;
         animation: spin 1s linear infinite;
+        line-height: 1;
     }
     .loading-indicator.success {
         border-color: #4CAF50;
@@ -507,9 +543,9 @@ export const webviewStyles = `
     }
     #minimap .minimap-viewport {
         fill: none;
-        stroke: var(--vscode-textLink-foreground);
+        stroke: #ffffff;
         stroke-width: 2px;
-        opacity: 0.8;
+        opacity: 0.9;
         pointer-events: none;
     }
     .collapsed-group-node {
