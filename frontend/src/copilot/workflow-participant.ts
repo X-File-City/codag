@@ -177,7 +177,7 @@ ${contextStr}`;
     handler
   );
 
-  participant.iconPath = new vscode.ThemeIcon('graph');
+  participant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media/icon-chat.png');
 
   context.subscriptions.push(participant);
   console.log('✅ Registered @codag chat participant');

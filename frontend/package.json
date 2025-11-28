@@ -53,6 +53,7 @@
         "fullName": "Codag",
         "description": "Expert in LLM workflow architecture, node relationships, and code generation for workflow modifications",
         "isSticky": true,
+        "icon": "media/icon-chat.png",
         "disambiguation": [
           {
             "category": "workflow_architecture",
@@ -201,13 +202,19 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "compile": "tsc -p ./ && npm run compile:webview",
+    "compile:extension": "tsc -p ./",
+    "compile:webview": "esbuild src/webview-client/main.ts --bundle --outfile=out/webview-client/main.js --format=iife --target=es2020 --sourcemap",
+    "watch": "concurrently \"tsc -watch -p ./\" \"npm run watch:webview\"",
+    "watch:extension": "tsc -watch -p ./",
+    "watch:webview": "esbuild src/webview-client/main.ts --bundle --outfile=out/webview-client/main.js --format=iife --target=es2020 --sourcemap --watch"
   },
   "devDependencies": {
     "@types/dagre": "^0.7.52",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.80.0",
+    "concurrently": "^8.2.0",
+    "esbuild": "^0.19.0",
     "typescript": "^5.0.0"
   },
   "dependencies": {

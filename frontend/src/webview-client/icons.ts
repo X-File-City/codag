@@ -1,6 +1,5 @@
-/**
- * Get SVG icon for a node type
- */
+// SVG icons for node types
+
 export function getNodeIcon(type: string): string {
     const icons: Record<string, string> = {
         trigger: '<svg viewBox="0 0 24 24" width="24" height="24"><path d="M13 3v7h9l-9 11v-7H4l9-11z" fill="currentColor"/></svg>',
