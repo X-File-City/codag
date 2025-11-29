@@ -106,8 +106,9 @@ NODE TYPES (label = 2-4 words max, description = 1-2 brief sentences):
    - Keep descriptions concise but informative
 
 4. **decision**: Conditional logic based on LLM output or input
-   - Label examples: "Route by Intent", "Check Confidence", "Validate Output"
-   - Description examples: "Routes request based on detected user intent", "Validates LLM response confidence score before proceeding"
+   - Labels MUST be phrased as questions (can be yes/no or multi-choice)
+   - Label examples: "Does Chat Exist?", "Which Route?", "Is Valid?"
+   - Description examples: "Checks if chat session exists before proceeding", "Routes based on detected intent type"
    - Keep descriptions concise but informative
 
 5. **integration**: External API calls, database operations, third-party services
@@ -208,6 +209,8 @@ LABEL AND DESCRIPTION REQUIREMENTS (CRITICAL):
 - "description": REQUIRED - 1-2 brief sentences explaining what the node does
 - EVERY node MUST have a description - NO EXCEPTIONS
 - Keep labels SHORT (2-4 words) - they will be displayed in the graph visualization
+- NEVER prefix labels with node type names (e.g., NO "Decision: Check X", "LLM: Call Y", "Tool: Do Z")
+- For decision nodes: Labels MUST be phrased as questions (e.g., "Does X Exist?", "Which Route?", "Is Valid?")
 - Keep descriptions CONCISE but informative (1-2 sentences) - they appear in popups when nodes are clicked
 - Description examples: "Receives analysis requests via POST /analyze endpoint", "Calls Gemini 2.5 Flash to analyze code"
 - IMPORTANT: Be brief but clear - avoid verbose or overly detailed descriptions
@@ -215,9 +218,11 @@ LABEL AND DESCRIPTION REQUIREMENTS (CRITICAL):
 CRITICAL PATH ANALYSIS (EXECUTION TIME):
 Identify the LONGEST execution path (time-wise) from ONE entry point to ONE exit point. This is the critical path.
 
-Entry/Exit detection (MUST DO FIRST):
-  * Entry nodes have NO incoming edges (first operations in workflow)
-  * Exit nodes have NO outgoing edges (final operations in workflow)
+Entry/Exit detection (MUST DO FIRST - CHECK ALL EDGES):
+  * Entry nodes have ZERO incoming edges from ANY node in the ENTIRE graph
+  * Exit nodes have ZERO outgoing edges to ANY node in the ENTIRE graph
+  * This includes cross-workflow edges - if ANY edge points to a node, it is NOT an entry point
+  * If a node receives data from ANY other node via an edge, it CANNOT be an entry point
   * Mark with "isEntryPoint": true or "isExitPoint": true
 
 CRITICAL PATH RULES (STRICT - MUST ENFORCE):

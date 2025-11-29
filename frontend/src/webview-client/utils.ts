@@ -1,6 +1,6 @@
 // Utility functions for webview client
 
-export const GRID_SIZE = 5; // 5px grid for precise alignment
+import { GRID_SIZE, ARROW_HEAD_LENGTH } from './constants';
 
 /**
  * Snap value to nearest grid point
@@ -90,6 +90,27 @@ export function isNodeInWorkflow(nodeId: string, workflowId: string, workflowGro
 }
 
 /**
+ * Shorten endpoint along the line by offset amount (for arrow head clearance)
+ */
+function shortenEndpoint(
+    source: { x: number; y: number },
+    target: { x: number; y: number },
+    offset: number
+): { x: number; y: number } {
+    const dx = target.x - source.x;
+    const dy = target.y - source.y;
+    const length = Math.sqrt(dx * dx + dy * dy);
+
+    if (length === 0 || length <= offset) return target;
+
+    const ratio = (length - offset) / length;
+    return {
+        x: source.x + dx * ratio,
+        y: source.y + dy * ratio
+    };
+}
+
+/**
  * Generate curved path for cross-workflow edges
  */
 export function generateEdgePath(
@@ -98,7 +119,10 @@ export function generateEdgePath(
     targetNode: any,
     workflowGroups: any[],
     targetWidth: number = 140,
-    targetHeight: number = 70
+    targetHeight: number = 122,
+    sourceWidth: number = 140,
+    sourceHeight: number = 122,
+    allEdges: any[] = []
 ): string {
     // Validate nodes exist and have valid coordinates
     if (!sourceNode || !targetNode ||
@@ -115,15 +139,29 @@ export function generateEdgePath(
     const targetGroup = workflowGroups.find((g: any) => g.nodes.includes(edge.target));
     const isCrossWorkflow = sourceGroup && targetGroup && sourceGroup.id !== targetGroup.id;
 
-    const intersection = intersectRect(sourceNode, targetNode, targetWidth, targetHeight);
+    // Check if bidirectional (reverse edge exists)
+    const isBidirectional = allEdges.some((e: any) => e.source === edge.target && e.target === edge.source);
+
+    // Calculate intersection at target node boundary (always needed for arrow)
+    const targetIntersection = intersectRect(sourceNode, targetNode, targetWidth, targetHeight);
+    const endpoint = shortenEndpoint(sourceNode, targetIntersection, ARROW_HEAD_LENGTH);
+
+    // Only shorten source end for bidirectional edges
+    let startpoint: { x: number; y: number };
+    if (isBidirectional) {
+        const sourceIntersection = intersectRect(targetNode, sourceNode, sourceWidth, sourceHeight);
+        startpoint = shortenEndpoint(targetNode, sourceIntersection, ARROW_HEAD_LENGTH);
+    } else {
+        startpoint = intersectRect(targetNode, sourceNode, sourceWidth, sourceHeight);
+    }
 
     if (isCrossWorkflow) {
         // Generate smooth quadratic Bezier curve for cross-workflow edges
-        const midY = (sourceNode.y + intersection.y) / 2;
+        const midY = (startpoint.y + endpoint.y) / 2;
         // Control point at vertical midpoint to create smooth curve
-        return `M${sourceNode.x},${sourceNode.y} Q${sourceNode.x},${midY} ${intersection.x},${intersection.y}`;
+        return `M${startpoint.x},${startpoint.y} Q${startpoint.x},${midY} ${endpoint.x},${endpoint.y}`;
     } else {
         // Straight line for within-workflow edges
-        return `M${sourceNode.x},${sourceNode.y} L${intersection.x},${intersection.y}`;
+        return `M${startpoint.x},${startpoint.y} L${endpoint.x},${endpoint.y}`;
     }
 }

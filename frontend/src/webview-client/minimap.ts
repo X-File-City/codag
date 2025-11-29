@@ -1,5 +1,9 @@
 // Minimap rendering
 import * as state from './state';
+import {
+    NODE_WIDTH, NODE_HEIGHT, NODE_HALF_WIDTH, NODE_HALF_HEIGHT,
+    TRANSITION_FAST, MINIMAP_PADDING
+} from './constants';
 
 declare const d3: any;
 
@@ -8,8 +12,9 @@ export function renderMinimap(): void {
     const minimapContainer = document.getElementById('minimap');
     if (!minimapContainer) return;
 
-    const minimapWidth = 200;
-    const minimapHeight = 150;
+    // Read dimensions from CSS (responsive)
+    const minimapWidth = minimapContainer.clientWidth || 200;
+    const minimapHeight = minimapContainer.clientHeight || 150;
 
     // Clear existing minimap
     minimapContainer.innerHTML = '';
@@ -27,14 +32,12 @@ export function renderMinimap(): void {
     const nodesWithPositions = currentGraphData.nodes.filter((n: any) => !isNaN(n.x) && !isNaN(n.y));
     if (nodesWithPositions.length === 0) return;
 
-    const nodeWidth = 140;
-    const nodeHeight = 70;
     const xs = nodesWithPositions.map((n: any) => n.x);
     const ys = nodesWithPositions.map((n: any) => n.y);
-    const minX = Math.min(...xs) - nodeWidth / 2;
-    const maxX = Math.max(...xs) + nodeWidth / 2;
-    const minY = Math.min(...ys) - nodeHeight;
-    const maxY = Math.max(...ys) + nodeHeight / 2;
+    const minX = Math.min(...xs) - NODE_HALF_WIDTH;
+    const maxX = Math.max(...xs) + NODE_HALF_WIDTH;
+    const minY = Math.min(...ys) - NODE_HEIGHT;
+    const maxY = Math.max(...ys) + NODE_HEIGHT / 2;
 
     const graphWidth = maxX - minX;
     const graphHeight = maxY - minY;
@@ -43,10 +46,9 @@ export function renderMinimap(): void {
         return;
     }
 
-    const padding = 10;
     const scale = Math.min(
-        (minimapWidth - padding * 2) / graphWidth,
-        (minimapHeight - padding * 2) / graphHeight
+        (minimapWidth - MINIMAP_PADDING * 2) / graphWidth,
+        (minimapHeight - MINIMAP_PADDING * 2) / graphHeight
     );
 
     if (!isFinite(scale) || scale <= 0) return;
@@ -142,7 +144,7 @@ export function renderMinimap(): void {
             currentHeight / 2 - currentTransform.k * graphY
         ];
 
-        svg.transition().duration(300).call(
+        svg.transition().duration(TRANSITION_FAST).call(
             zoom.transform,
             d3.zoomIdentity.translate(newTranslate[0], newTranslate[1]).scale(currentTransform.k)
         );
@@ -242,10 +244,10 @@ export function setupMinimapZoomListener(): void {
                 const inCollapsedGroup = workflowGroups.some((g: any) => g.collapsed && g.nodes.includes(node.id));
                 if (inCollapsedGroup) return false;
 
-                const nodeLeft = node.x - 70;
-                const nodeRight = node.x + 70;
-                const nodeTop = node.y - 35;
-                const nodeBottom = node.y + 35;
+                const nodeLeft = node.x - NODE_HALF_WIDTH;
+                const nodeRight = node.x + NODE_HALF_WIDTH;
+                const nodeTop = node.y - NODE_HALF_HEIGHT / 2;
+                const nodeBottom = node.y + NODE_HALF_HEIGHT / 2;
 
                 return !(nodeRight < viewportBounds.left ||
                         nodeLeft > viewportBounds.right ||

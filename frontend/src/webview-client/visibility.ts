@@ -1,6 +1,7 @@
 // Group visibility management
 import * as state from './state';
 import { generateEdgePath, getNodeOrCollapsedGroup } from './utils';
+import { getNodeDimensions, areNodesInSameCollapsedGroup } from './helpers';
 
 declare const d3: any;
 
@@ -52,9 +53,7 @@ export function updateGroupVisibility(): void {
         if (!sourceNode || !targetNode) return '';
 
         // Check if both nodes are in the same collapsed group
-        const sourceGroup = workflowGroups.find((g: any) => g.collapsed && g.nodes.includes(l.source));
-        const targetGroup = workflowGroups.find((g: any) => g.collapsed && g.nodes.includes(l.target));
-        if (sourceGroup && targetGroup && sourceGroup.id === targetGroup.id) {
+        if (areNodesInSameCollapsedGroup(l.source, l.target, workflowGroups)) {
             // Internal edge - hide it
             d3.select(this.parentNode).style('display', 'none');
             return '';
@@ -63,10 +62,10 @@ export function updateGroupVisibility(): void {
         // Edge crosses group boundaries - show it
         d3.select(this.parentNode).style('display', 'block');
 
-        const targetWidth = targetNode.isCollapsedGroup ? 260 : 140;
-        const targetHeight = targetNode.isCollapsedGroup ? 130 : 70;
+        const { width: targetWidth, height: targetHeight } = getNodeDimensions(targetNode);
+        const { width: sourceWidth, height: sourceHeight } = getNodeDimensions(sourceNode);
 
-        return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight);
+        return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight, sourceWidth, sourceHeight, currentGraphData.edges);
     });
 
     linkHover.attr('d', function(this: SVGPathElement, l: any) {
@@ -76,16 +75,14 @@ export function updateGroupVisibility(): void {
         if (!sourceNode || !targetNode) return '';
 
         // Check if both nodes are in the same collapsed group
-        const sourceGroup = workflowGroups.find((g: any) => g.collapsed && g.nodes.includes(l.source));
-        const targetGroup = workflowGroups.find((g: any) => g.collapsed && g.nodes.includes(l.target));
-        if (sourceGroup && targetGroup && sourceGroup.id === targetGroup.id) {
+        if (areNodesInSameCollapsedGroup(l.source, l.target, workflowGroups)) {
             return '';
         }
 
-        const targetWidth = targetNode.isCollapsedGroup ? 260 : 140;
-        const targetHeight = targetNode.isCollapsedGroup ? 130 : 70;
+        const { width: targetWidth, height: targetHeight } = getNodeDimensions(targetNode);
+        const { width: sourceWidth, height: sourceHeight } = getNodeDimensions(sourceNode);
 
-        return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight);
+        return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight, sourceWidth, sourceHeight, currentGraphData.edges);
     });
 
     // Notify extension of workflow visibility state

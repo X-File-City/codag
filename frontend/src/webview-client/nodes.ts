@@ -1,19 +1,10 @@
 // Node rendering
 import * as state from './state';
 import { getNodeIcon } from './icons';
+import { TYPE_COLORS, NODE_WIDTH, NODE_HEIGHT, NODE_HALF_WIDTH, NODE_HALF_HEIGHT, NODE_BORDER_RADIUS, NODE_ICON_SCALE } from './constants';
+import { getWorkflowNodeIds } from './helpers';
 
 declare const d3: any;
-
-const TYPE_COLORS: Record<string, string> = {
-    'trigger': '#FFB74D',
-    'llm': '#64B5F6',
-    'tool': '#81C784',
-    'decision': '#BA68C8',
-    'integration': '#FF8A65',
-    'memory': '#4DB6AC',
-    'parser': '#A1887F',
-    'output': '#90A4AE'
-};
 
 export function renderNodes(
     dragstarted: (event: any, d: any) => void,
@@ -23,12 +14,7 @@ export function renderNodes(
     const { g, currentGraphData, workflowGroups } = state;
 
     // Filter nodes to only render those in workflow groups WITH 3+ NODES
-    const allWorkflowNodeIds = new Set<string>();
-    workflowGroups.forEach((grp: any) => {
-        if (grp.nodes.length >= 3) {
-            grp.nodes.forEach((id: string) => allWorkflowNodeIds.add(id));
-        }
-    });
+    const allWorkflowNodeIds = getWorkflowNodeIds(workflowGroups);
     const nodesToRender = currentGraphData.nodes.filter((n: any) => allWorkflowNodeIds.has(n.id));
 
     // Create nodes
@@ -45,31 +31,38 @@ export function renderNodes(
             .on('drag', dragged)
             .on('end', dragended));
 
-    // Add rectangular background fill
+    // Add full background fill
     node.append('rect')
-        .attr('width', 140)
-        .attr('height', 70)
-        .attr('x', -70)
-        .attr('y', -35)
-        .attr('rx', 4)
+        .attr('width', NODE_WIDTH)
+        .attr('height', NODE_HEIGHT)
+        .attr('x', -NODE_HALF_WIDTH)
+        .attr('y', -NODE_HALF_HEIGHT)
+        .attr('rx', NODE_BORDER_RADIUS)
         .style('fill', 'var(--vscode-editor-background)')
         .style('stroke', 'none');
 
-    // Add colored header background
+    // Add dark header background (top 30px, rounded top corners)
     node.append('path')
         .attr('class', 'node-header')
-        .attr('d', 'M -65,-35 L 65,-35 A 4,4 0 0,1 69,-31 L 69,-11 L -69,-11 L -69,-31 A 4,4 0 0,1 -65,-35 Z')
+        .attr('d', 'M -66,-61 L 66,-61 A 4,4 0 0,1 70,-57 L 70,-31 L -70,-31 L -70,-57 A 4,4 0 0,1 -66,-61 Z')
+        .style('fill', 'var(--vscode-editor-background)')
+        .style('stroke', 'none');
+
+    // Add colored body background (bottom 92px, rounded bottom corners)
+    node.append('path')
+        .attr('class', 'node-body')
+        .attr('d', 'M -70,-31 L 70,-31 L 70,57 A 4,4 0 0,1 66,61 L -66,61 A 4,4 0 0,1 -70,57 Z')
         .style('fill', (d: any) => TYPE_COLORS[d.type] || '#90A4AE')
         .style('opacity', 0.5)
         .style('stroke', 'none');
 
     // Add rectangular border with entry/exit/critical classes
     node.append('rect')
-        .attr('width', 140)
-        .attr('height', 70)
-        .attr('x', -70)
-        .attr('y', -35)
-        .attr('rx', 4)
+        .attr('width', NODE_WIDTH)
+        .attr('height', NODE_HEIGHT)
+        .attr('x', -NODE_HALF_WIDTH)
+        .attr('y', -NODE_HALF_HEIGHT)
+        .attr('rx', NODE_BORDER_RADIUS)
         .attr('class', (d: any) => {
             const classes: string[] = [];
             if (d.isCriticalPath) classes.push('critical-path');
@@ -80,56 +73,51 @@ export function renderNodes(
         .style('fill', 'none')
         .style('pointer-events', 'all');
 
-    // Add title with dynamic sizing
-    node.append('text')
-        .attr('class', 'node-title')
-        .attr('y', -21)
-        .attr('dominant-baseline', 'middle')
-        .each(function(this: SVGTextElement, d: any) {
-            const maxWidth = 110;
-            const minFontSize = 8;
-            const currentFontSize = 13;
+    // Add title centered in body with text wrapping
+    // Body spans from y=-31 (header bottom) to y=+61 (node bottom) = 92px
+    // 5px padding matches horizontal, -1px shift up for visual alignment
+    node.append('foreignObject')
+        .attr('x', -65)
+        .attr('y', -27)
+        .attr('width', 130)
+        .attr('height', 83)
+        .append('xhtml:div')
+        .attr('class', 'node-title-wrapper')
+        .style('width', '100%')
+        .style('height', '100%')
+        .style('display', 'flex')
+        .style('align-items', 'center')
+        .style('justify-content', 'center')
+        .style('text-align', 'center')
+        .style('color', '#ffffff')
+        .style('font-family', '"Inter", "Segoe UI", "SF Pro Display", -apple-system, sans-serif')
+        .style('font-size', '17px')
+        .style('font-weight', '400')
+        .style('letter-spacing', '-0.01em')
+        .style('line-height', '1.35')
+        .style('overflow', 'hidden')
+        .style('word-wrap', 'break-word')
+        .text((d: any) => d.label);
 
-            d3.select(this).text(d.label);
-            let textLength = this.getComputedTextLength();
-
-            if (textLength > maxWidth) {
-                const scale = maxWidth / textLength;
-                let newFontSize = Math.max(minFontSize, currentFontSize * scale);
-                d3.select(this).style('font-size', `${newFontSize}px`);
-
-                textLength = this.getComputedTextLength();
-
-                if (textLength > maxWidth && newFontSize === minFontSize) {
-                    let text = d.label;
-                    while (textLength > maxWidth && text.length > 3) {
-                        text = text.slice(0, -1);
-                        d3.select(this).text(`${text}...`);
-                        textLength = this.getComputedTextLength();
-                    }
-                }
-            }
-        });
-
-    // Add icon at bottom-right corner
+    // Add icon at top-left of header (centered vertically with type label)
     node.append('g')
         .attr('class', (d: any) => `node-icon ${d.type}`)
-        .attr('transform', 'translate(44, 10) scale(0.8)')
+        .attr('transform', `translate(-62, -55) scale(${NODE_ICON_SCALE})`)
         .html((d: any) => getNodeIcon(d.type));
 
-    // Add node type label
+    // Add node type label next to icon in header
     node.append('text')
         .attr('class', 'node-type')
         .text((d: any) => d.type.toUpperCase())
-        .attr('x', 40)
-        .attr('y', 21)
+        .attr('x', -38)
+        .attr('y', -43)
         .attr('dominant-baseline', 'middle')
-        .style('text-anchor', 'end');
+        .style('text-anchor', 'start');
 
     // Add selection indicator (camera corners)
     const cornerSize = 8;
     const cornerOffsetX = 78;
-    const cornerOffsetY = 42;
+    const cornerOffsetY = 69;
     node.append('g')
         .attr('class', 'node-selection-indicator')
         .attr('data-node-id', (d: any) => d.id)

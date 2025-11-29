@@ -2,6 +2,15 @@
 import * as state from './state';
 import { getNodeWorkflowCount, generateEdgePath, getNodeOrCollapsedGroup } from './utils';
 import { renderMinimap } from './minimap';
+import { getNodeDimensions, positionTooltipNearMouse } from './helpers';
+import {
+    NODE_WIDTH, NODE_HEIGHT, NODE_HALF_WIDTH,
+    COLLAPSED_GROUP_HALF_WIDTH, COLLAPSED_GROUP_HALF_HEIGHT,
+    GROUP_BOUNDS_PADDING_X, GROUP_BOUNDS_PADDING_TOP, GROUP_BOUNDS_PADDING_BOTTOM,
+    GROUP_TITLE_OFFSET_X, GROUP_TITLE_OFFSET_Y,
+    GROUP_COLLAPSE_BTN_X, GROUP_COLLAPSE_BTN_Y, GROUP_COLLAPSE_BTN_SIZE,
+    TRANSITION_FAST, TRANSITION_NORMAL
+} from './constants';
 
 declare const d3: any;
 
@@ -56,12 +65,12 @@ function toggleLegend(): void {
 
 function zoomIn(): void {
     const { svg, zoom } = state;
-    svg.transition().duration(300).call(zoom.scaleBy, 1.3);
+    svg.transition().duration(TRANSITION_FAST).call(zoom.scaleBy, 1.3);
 }
 
 function zoomOut(): void {
     const { svg, zoom } = state;
-    svg.transition().duration(300).call(zoom.scaleBy, 0.7);
+    svg.transition().duration(TRANSITION_FAST).call(zoom.scaleBy, 0.7);
 }
 
 function setupButtonTooltips(): void {
@@ -71,7 +80,7 @@ function setupButtonTooltips(): void {
         btn.addEventListener('mouseenter', (e) => showButtonTooltip(e as MouseEvent, tooltips[index]));
         btn.addEventListener('mousemove', (e) => {
             const tooltip = document.getElementById('buttonTooltip');
-            if (tooltip) positionTooltip(tooltip, (e as MouseEvent).clientX, (e as MouseEvent).clientY);
+            if (tooltip) positionTooltipNearMouse(tooltip, (e as MouseEvent).clientX, (e as MouseEvent).clientY);
         });
         btn.addEventListener('mouseleave', hideButtonTooltip);
     });
@@ -82,31 +91,8 @@ function showButtonTooltip(event: MouseEvent, text: string): void {
     if (!tooltip) return;
 
     tooltip.textContent = text;
-    positionTooltip(tooltip, event.clientX, event.clientY);
+    positionTooltipNearMouse(tooltip, event.clientX, event.clientY);
     tooltip.classList.add('visible');
-}
-
-function positionTooltip(tooltip: HTMLElement, mouseX: number, mouseY: number): void {
-    tooltip.style.opacity = '0';
-    tooltip.style.display = 'block';
-    const tooltipRect = tooltip.getBoundingClientRect();
-    tooltip.style.opacity = '';
-    tooltip.style.display = '';
-
-    let left = mouseX + 10;
-    let top = mouseY - 30;
-
-    if (left + tooltipRect.width > window.innerWidth) {
-        left = mouseX - tooltipRect.width - 10;
-    }
-    if (left < 0) left = 10;
-    if (top < 0) top = mouseY + 10;
-    if (top + tooltipRect.height > window.innerHeight) {
-        top = window.innerHeight - tooltipRect.height - 10;
-    }
-
-    tooltip.style.left = `${left}px`;
-    tooltip.style.top = `${top}px`;
 }
 
 function hideButtonTooltip(): void {
@@ -127,14 +113,12 @@ export function fitToScreen(): void {
     const nodesWithPositions = currentGraphData.nodes.filter((n: any) => !isNaN(n.x) && !isNaN(n.y));
     if (nodesWithPositions.length === 0) return;
 
-    const nodeWidth = 140;
-    const nodeHeight = 70;
     const xs = nodesWithPositions.map((n: any) => n.x);
     const ys = nodesWithPositions.map((n: any) => n.y);
-    const minX = Math.min(...xs) - nodeWidth / 2;
-    const maxX = Math.max(...xs) + nodeWidth / 2;
-    const minY = Math.min(...ys) - nodeHeight;
-    const maxY = Math.max(...ys) + nodeHeight / 2;
+    const minX = Math.min(...xs) - NODE_HALF_WIDTH;
+    const maxX = Math.max(...xs) + NODE_HALF_WIDTH;
+    const minY = Math.min(...ys) - NODE_HEIGHT;
+    const maxY = Math.max(...ys) + NODE_HEIGHT / 2;
 
     const fullWidth = maxX - minX;
     const fullHeight = maxY - minY;
@@ -146,7 +130,7 @@ export function fitToScreen(): void {
     const scale = 0.9 / Math.max(fullWidth / width, fullHeight / height);
     const translate = [width / 2 - scale * midX, height / 2 - scale * midY];
 
-    svg.transition().duration(500).call(
+    svg.transition().duration(TRANSITION_NORMAL).call(
         zoom.transform,
         d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
     );
@@ -181,10 +165,10 @@ export function formatGraph(updateGroupVisibility: () => void): void {
         const ys = groupNodes.map((n: any) => n.y);
 
         group.bounds = {
-            minX: Math.min(...xs) - 90,
-            maxX: Math.max(...xs) + 90,
-            minY: Math.min(...ys) - 75,
-            maxY: Math.max(...ys) + 55
+            minX: Math.min(...xs) - GROUP_BOUNDS_PADDING_X,
+            maxX: Math.max(...xs) + GROUP_BOUNDS_PADDING_X,
+            minY: Math.min(...ys) - GROUP_BOUNDS_PADDING_TOP,
+            maxY: Math.max(...ys) + GROUP_BOUNDS_PADDING_BOTTOM
         };
 
         group.centerX = (group.bounds.minX + group.bounds.maxX) / 2;
@@ -195,7 +179,7 @@ export function formatGraph(updateGroupVisibility: () => void): void {
     svg.selectAll('.group-background')
         .filter((d: any) => d.bounds && !isNaN(d.bounds.minX))
         .transition()
-        .duration(500)
+        .duration(TRANSITION_NORMAL)
         .attr('x', (d: any) => d.bounds.minX)
         .attr('y', (d: any) => d.bounds.minY)
         .attr('width', (d: any) => d.bounds.maxX - d.bounds.minX)
@@ -204,78 +188,74 @@ export function formatGraph(updateGroupVisibility: () => void): void {
     svg.selectAll('.group-title-expanded')
         .filter((d: any) => d.bounds && !isNaN(d.bounds.minX))
         .transition()
-        .duration(500)
-        .attr('x', (d: any) => d.bounds.minX + 40)
-        .attr('y', (d: any) => d.bounds.minY + 24);
+        .duration(TRANSITION_NORMAL)
+        .attr('x', (d: any) => d.bounds.minX + GROUP_TITLE_OFFSET_X)
+        .attr('y', (d: any) => d.bounds.minY + GROUP_TITLE_OFFSET_Y);
 
     svg.selectAll('.group-collapse-btn rect')
         .filter((d: any) => d.bounds && !isNaN(d.bounds.minX))
         .transition()
-        .duration(500)
-        .attr('x', (d: any) => d.bounds.minX + 10)
-        .attr('y', (d: any) => d.bounds.minY + 8);
+        .duration(TRANSITION_NORMAL)
+        .attr('x', (d: any) => d.bounds.minX + GROUP_COLLAPSE_BTN_X)
+        .attr('y', (d: any) => d.bounds.minY + GROUP_COLLAPSE_BTN_Y);
 
     svg.selectAll('.group-collapse-btn text')
         .filter((d: any) => d.bounds && !isNaN(d.bounds.minX))
         .transition()
-        .duration(500)
-        .attr('x', (d: any) => d.bounds.minX + 22)
-        .attr('y', (d: any) => d.bounds.minY + 24);
+        .duration(TRANSITION_NORMAL)
+        .attr('x', (d: any) => d.bounds.minX + GROUP_COLLAPSE_BTN_X + GROUP_COLLAPSE_BTN_SIZE / 2)
+        .attr('y', (d: any) => d.bounds.minY + GROUP_TITLE_OFFSET_Y);
 
     // Update collapsed groups
     svg.selectAll('.collapsed-group-node rect')
         .filter((d: any) => !isNaN(d.centerX) && !isNaN(d.centerY))
         .transition()
-        .duration(500)
-        .attr('x', (d: any) => d.centerX - 130)
-        .attr('y', (d: any) => d.centerY - 65);
+        .duration(TRANSITION_NORMAL)
+        .attr('x', (d: any) => d.centerX - COLLAPSED_GROUP_HALF_WIDTH)
+        .attr('y', (d: any) => d.centerY - COLLAPSED_GROUP_HALF_HEIGHT + 10);
 
     svg.selectAll('.collapsed-group-node')
         .filter((d: any) => !isNaN(d.centerX) && !isNaN(d.centerY))
         .each(function(this: SVGGElement, d: any) {
             const group = d3.select(this);
-            const texts = group.selectAll('text').nodes();
 
-            if (texts[0]) {
-                d3.select(texts[0]).transition().duration(500)
-                    .attr('x', d.centerX).attr('y', d.centerY - 20);
-            }
-            if (texts[1]) {
-                d3.select(texts[1]).transition().duration(500)
-                    .attr('x', d.centerX).attr('y', d.centerY + 5);
-            }
-            if (texts[2]) {
-                d3.select(texts[2]).transition().duration(500)
-                    .attr('x', d.centerX).attr('y', d.centerY + 30);
-            }
+            // Update background rects
+            group.selectAll('rect').transition().duration(TRANSITION_NORMAL)
+                .attr('x', d.centerX - COLLAPSED_GROUP_HALF_WIDTH)
+                .attr('y', d.centerY - COLLAPSED_GROUP_HALF_HEIGHT);
+
+            // Update foreignObject (contains all text content)
+            group.select('foreignObject').transition().duration(TRANSITION_NORMAL)
+                .attr('x', d.centerX - COLLAPSED_GROUP_HALF_WIDTH)
+                .attr('y', d.centerY - COLLAPSED_GROUP_HALF_HEIGHT);
         });
 
     // Update nodes
     svg.selectAll('.node')
         .filter((d: any) => !isNaN(d.x) && !isNaN(d.y))
         .transition()
-        .duration(500)
+        .duration(TRANSITION_NORMAL)
         .attr('transform', (d: any) => `translate(${d.x},${d.y})`);
 
     // Update edges
     const getNode = (nodeId: string) => getNodeOrCollapsedGroup(nodeId, currentGraphData.nodes, workflowGroups);
 
-    svg.selectAll('.link').transition().duration(500)
+    svg.selectAll('.link').transition().duration(TRANSITION_NORMAL)
         .attr('d', function(l: any) {
             const sourceNode = getNode(l.source);
             const targetNode = getNode(l.target);
-            const targetWidth = targetNode?.isCollapsedGroup ? 260 : 140;
-            const targetHeight = targetNode?.isCollapsedGroup ? 130 : 70;
-            return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight);
+            const { width: targetWidth, height: targetHeight } = getNodeDimensions(targetNode);
+            const { width: sourceWidth, height: sourceHeight } = getNodeDimensions(sourceNode);
+            return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight, sourceWidth, sourceHeight, currentGraphData.edges);
         });
 
-    svg.selectAll('.link-hover').transition().duration(500)
+    svg.selectAll('.link-hover').transition().duration(TRANSITION_NORMAL)
         .attr('d', function(l: any) {
             const sourceNode = getNode(l.source);
             const targetNode = getNode(l.target);
-            const targetWidth = targetNode?.isCollapsedGroup ? 260 : 140;
-            const targetHeight = targetNode?.isCollapsedGroup ? 130 : 70;
-            return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight);
+            const { width: targetWidth, height: targetHeight } = getNodeDimensions(targetNode);
+            const { width: sourceWidth, height: sourceHeight } = getNodeDimensions(sourceNode);
+            return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight, sourceWidth, sourceHeight, currentGraphData.edges);
         });
 
     // Update minimap

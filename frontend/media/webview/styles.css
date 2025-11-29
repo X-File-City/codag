@@ -151,13 +151,19 @@ body {
     rx: 8;
     ry: 8;
 }
-.node rect.entry-point:hover {
+.node:hover rect.entry-point {
     stroke: #66BB6A !important;
     stroke-width: 4px !important;
+    fill: var(--vscode-list-hoverBackground);
+    rx: 8;
+    ry: 8;
 }
-.node rect.exit-point:hover {
+.node:hover rect.exit-point {
     stroke: #42A5F5 !important;
     stroke-width: 4px !important;
+    fill: var(--vscode-list-hoverBackground);
+    rx: 8;
+    ry: 8;
 }
 .node-icon {
     pointer-events: none;
@@ -179,8 +185,8 @@ body {
     text-anchor: middle;
 }
 .node-title {
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 14px;
+    font-weight: 400;
     fill: #ffffff;
 }
 .node-type {
@@ -193,11 +199,12 @@ body {
     fill: none;
     stroke: var(--vscode-editor-foreground);
     stroke-opacity: 0.6;
-    stroke-width: 2px;
+    stroke-width: 6px;
     transition: stroke 0.2s ease, stroke-width 0.2s ease;
+    pointer-events: none;
 }
 .link.critical-path {
-    stroke-width: 2px;
+    stroke-width: 6px;
     stroke-opacity: 1;
     stroke: #FF6B6B;
 }
@@ -257,10 +264,16 @@ body {
     border: 1px solid var(--vscode-panel-border);
     border-radius: 4px;
     padding: 8px 12px;
-    font-size: 11px;
+    font-size: 12px;
     z-index: 2000;
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-    transition: opacity 0.3s ease;
+    transform: translateX(0);
+    opacity: 1;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+}
+.loading-indicator.hidden {
+    transform: translateX(20px);
+    opacity: 0;
 }
 .loading-content {
     display: flex;
@@ -273,20 +286,27 @@ body {
     gap: 8px;
 }
 .loading-icon {
-    display: inline-block;
-    animation: spin 1s linear infinite;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     line-height: 1;
+}
+.loading-icon .spinner-pill {
+    animation: spin 1s linear infinite;
+    transform-origin: center center;
 }
 .loading-indicator.success {
     border-color: #4CAF50;
 }
-.loading-indicator.success .loading-icon {
+.loading-indicator.success .loading-icon,
+.loading-indicator.success .loading-icon .spinner-pill {
     animation: none;
 }
 .loading-indicator.error {
     border-color: #f44336;
 }
-.loading-indicator.error .loading-icon {
+.loading-indicator.error .loading-icon,
+.loading-indicator.error .loading-icon .spinner-pill {
     animation: none;
 }
 @keyframes spin {
@@ -546,3 +566,52 @@ body {
         display: none;
     }
 }
+
+/* Responsive: Scale minimap and legend for smaller viewports */
+@media (max-width: 900px) {
+    #minimap {
+        width: 160px;
+        height: 120px;
+    }
+    .legend {
+        width: 160px;
+        bottom: 144px;
+    }
+}
+
+@media (max-width: 700px) {
+    #minimap {
+        width: 130px;
+        height: 100px;
+    }
+    .legend {
+        width: 130px;
+        bottom: 124px;
+    }
+    .legend-header {
+        font-size: 9px;
+        padding: 3px 6px;
+    }
+    .legend-content {
+        padding: 3px 6px;
+    }
+    .legend-item {
+        font-size: 8px;
+        gap: 4px;
+        margin-bottom: 3px;
+    }
+    .legend-line {
+        width: 16px;
+    }
+}
+
+@media (max-width: 500px) {
+    #minimap {
+        width: 100px;
+        height: 75px;
+    }
+    .legend {
+        display: none;
+    }
+}
+

@@ -2,6 +2,12 @@
 import * as state from './state';
 import { snapToGrid, getNodeWorkflowCount } from './utils';
 import { createWorkflowPattern } from './setup';
+import { calculateGroupBounds } from './helpers';
+import {
+    NODE_WIDTH, NODE_HEIGHT,
+    DAGRE_NODESEP, DAGRE_RANKSEP, DAGRE_MARGIN,
+    WORKFLOW_SPACING
+} from './constants';
 
 declare const dagre: any;
 declare const d3: any;
@@ -10,7 +16,6 @@ export function layoutWorkflows(defs: any): void {
     const { currentGraphData, workflowGroups, originalPositions, g } = state;
 
     let currentYOffset = 0;
-    const workflowSpacing = 150;
 
     workflowGroups.forEach((group, idx) => {
         // Get ALL nodes in this workflow (including shared nodes)
@@ -30,16 +35,16 @@ export function layoutWorkflows(defs: any): void {
         const dagreGraph = new dagre.graphlib.Graph();
         dagreGraph.setGraph({
             rankdir: 'LR',
-            nodesep: 50,
-            ranksep: 60,
-            marginx: 30,
-            marginy: 30
+            nodesep: DAGRE_NODESEP,
+            ranksep: DAGRE_RANKSEP,
+            marginx: DAGRE_MARGIN,
+            marginy: DAGRE_MARGIN
         });
         dagreGraph.setDefaultEdgeLabel(() => ({}));
 
         // Add ALL nodes to Dagre
         allGroupNodes.forEach((node: any) => {
-            dagreGraph.setNode(node.id, { width: 140, height: 70 });
+            dagreGraph.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
         });
 
         // Add only edges between nodes in this workflow
@@ -75,22 +80,15 @@ export function layoutWorkflows(defs: any): void {
             return;
         }
 
-        const xs = exclusiveGroupNodes.map((n: any) => n.x);
-        const ys = exclusiveGroupNodes.map((n: any) => n.y);
+        const boundsResult = calculateGroupBounds(exclusiveGroupNodes);
+        if (!boundsResult) return;
 
-        group.bounds = {
-            minX: Math.min(...xs) - 90,
-            maxX: Math.max(...xs) + 90,
-            minY: Math.min(...ys) - 75,
-            maxY: Math.max(...ys) + 55
-        };
-
-        // Calculate center for collapsed state
-        group.centerX = (group.bounds.minX + group.bounds.maxX) / 2;
-        group.centerY = (group.bounds.minY + group.bounds.maxY) / 2;
+        group.bounds = boundsResult.bounds;
+        group.centerX = boundsResult.centerX;
+        group.centerY = boundsResult.centerY;
 
         // Update Y offset for next workflow
-        currentYOffset = group.bounds.maxY + workflowSpacing;
+        currentYOffset = group.bounds.maxY + WORKFLOW_SPACING;
     });
 
     // Create colored dot patterns for each workflow group

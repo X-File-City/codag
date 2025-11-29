@@ -1,8 +1,10 @@
 // Drag handlers
 import * as state from './state';
-import { snapToGrid, generateEdgePath, getNodeOrCollapsedGroup } from './utils';
+import { snapToGrid } from './utils';
 import { openPanel, closePanel } from './panel';
 import { renderMinimap } from './minimap';
+import { updateEdgePaths } from './edges';
+import { DRAG_THRESHOLD } from './constants';
 
 declare const d3: any;
 
@@ -13,12 +15,10 @@ export function dragstarted(event: any, d: any): void {
     // Track start position to detect click vs drag
     dragStartX = event.x;
     dragStartY = event.y;
-    d3.select(event.sourceEvent.target.closest('.node')).raise();
+    d3.select(`.node[data-node-id="${d.id}"]`).raise();
 }
 
 export function dragged(event: any, d: any): void {
-    const { link, linkHover, currentGraphData, workflowGroups, minimapSvg } = state;
-
     // Snap to grid
     d.fx = snapToGrid(event.x);
     d.fy = snapToGrid(event.y);
@@ -26,39 +26,23 @@ export function dragged(event: any, d: any): void {
     d.y = d.fy;
 
     // Update node position
-    d3.select(event.sourceEvent.target.closest('.node'))
+    d3.select(`.node[data-node-id="${d.id}"]`)
         .attr('transform', `translate(${d.x},${d.y})`);
 
     // Update connected edges
-    const getNode = (nodeId: string) => getNodeOrCollapsedGroup(nodeId, currentGraphData.nodes, workflowGroups);
-
-    link.attr('d', function(l: any) {
-        const sourceNode = getNode(l.source);
-        const targetNode = getNode(l.target);
-        const targetWidth = targetNode?.isCollapsedGroup ? 260 : 140;
-        const targetHeight = targetNode?.isCollapsedGroup ? 130 : 70;
-        return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight);
-    });
-
-    linkHover.attr('d', function(l: any) {
-        const sourceNode = getNode(l.source);
-        const targetNode = getNode(l.target);
-        const targetWidth = targetNode?.isCollapsedGroup ? 260 : 140;
-        const targetHeight = targetNode?.isCollapsedGroup ? 130 : 70;
-        return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight);
-    });
+    updateEdgePaths();
 
     // Update minimap
     updateMinimapNodePosition(d);
 }
 
 export function dragended(event: any, d: any): void {
-    // Detect click vs drag (if moved less than 5 pixels, treat as click)
+    // Detect click vs drag
     const distance = Math.sqrt(
         Math.pow(event.x - dragStartX, 2) + Math.pow(event.y - dragStartY, 2)
     );
 
-    if (distance < 5) {
+    if (distance < DRAG_THRESHOLD) {
         // It was a click
         if (event.sourceEvent) {
             event.sourceEvent.stopPropagation();

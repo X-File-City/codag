@@ -98,17 +98,31 @@ export function setupSVG(): { svg: any; g: any; zoom: any; defs: any } {
 
     svg.call(zoom).on('dblclick.zoom', null);
 
-    // Arrow markers
+    // Arrow markers (30% smaller)
     defs.append('marker')
         .attr('id', 'arrowhead')
         .attr('viewBox', '-0 -5 10 10')
-        .attr('refX', 9.5)
+        .attr('refX', 0)
         .attr('refY', 0)
         .attr('orient', 'auto')
-        .attr('markerWidth', 6)
-        .attr('markerHeight', 6)
+        .attr('markerWidth', 2.8)
+        .attr('markerHeight', 2.8)
         .append('path')
         .attr('d', 'M 0,-5 L 10,0 L 0,5')
+        .attr('fill', 'currentColor')
+        .style('fill', 'var(--vscode-editor-foreground)');
+
+    // Reverse arrow marker for bidirectional edges (points toward source)
+    defs.append('marker')
+        .attr('id', 'arrowhead-start')
+        .attr('viewBox', '-10 -5 10 10')
+        .attr('refX', 0)
+        .attr('refY', 0)
+        .attr('orient', 'auto')
+        .attr('markerWidth', 2.8)
+        .attr('markerHeight', 2.8)
+        .append('path')
+        .attr('d', 'M 0,-5 L -10,0 L 0,5')
         .attr('fill', 'currentColor')
         .style('fill', 'var(--vscode-editor-foreground)');
 

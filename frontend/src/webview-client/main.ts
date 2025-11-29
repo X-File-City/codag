@@ -88,4 +88,13 @@ declare function acquireVsCodeApi(): any;
         // Update header stats
         updateSnapshotStats(state.workflowGroups, state.currentGraphData);
     }, 100);
+
+    // Re-render minimap on window resize (debounced)
+    let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
+    window.addEventListener('resize', () => {
+        if (resizeTimeout) clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(() => {
+            renderMinimap();
+        }, 150);
+    });
 })();

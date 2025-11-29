@@ -1,9 +1,15 @@
 // Message handler for extension communication
 import * as state from './state';
 import { computeGraphDiff, hasDiff } from './graph-diff';
-import { detectWorkflowGroups, updateSnapshotStats } from './workflow-detection';
-import { captureState, restoreState, applyIncrementalUpdate } from './incremental';
+import { detectWorkflowGroups, updateSnapshotStats, ensureVisualCues } from './workflow-detection';
 import { openPanel } from './panel';
+import { layoutWorkflows } from './layout';
+import { renderGroups, renderCollapsedGroups } from './groups';
+import { renderEdges } from './edges';
+import { renderNodes } from './nodes';
+import { dragstarted, dragged, dragended } from './drag';
+import { renderMinimap } from './minimap';
+import { updateGroupVisibility } from './visibility';
 
 declare const d3: any;
 
@@ -82,12 +88,12 @@ export function setupMessageHandler(): void {
 
             case 'updateGraph':
                 if (message.preserveState && message.graph) {
-                    console.log('[webview] updateGraph: applying incremental update');
+                    console.log('[webview] updateGraph: applying update');
 
-                    // Capture current UI state
-                    const savedState = captureState();
+                    // Capture zoom transform
+                    const zoomTransform = d3.zoomTransform(svg.node());
 
-                    // Compute diff between old and new graph
+                    // Compute diff for toast message
                     const diff = computeGraphDiff(state.currentGraphData, message.graph);
 
                     if (!hasDiff(diff)) {
@@ -95,46 +101,82 @@ export function setupMessageHandler(): void {
                         break;
                     }
 
-                    // Update the graph data
+                    // Show loading indicator with update summary
+                    const addedCount = diff.nodes.added.length;
+                    const removedCount = diff.nodes.removed.length;
+                    const parts = [];
+                    if (addedCount > 0) parts.push(`+${addedCount}`);
+                    if (removedCount > 0) parts.push(`-${removedCount}`);
+
+                    indicator.className = 'loading-indicator';
+                    indicator.classList.remove('hidden');
+                    iconSpan.innerHTML = '<svg class="spinner-pill" viewBox="0 0 24 24" width="14" height="14"><rect x="8" y="2" width="8" height="20" rx="4" ry="4" fill="currentColor"/></svg>';
+                    textSpan.textContent = `Updating: ${parts.join(', ')} nodes`;
+                    indicator.style.display = 'block';
+
+                    // Preserve collapsed states from old groups
+                    const oldCollapsedIds = new Set(
+                        state.workflowGroups.filter((g: any) => g.collapsed).map((g: any) => g.id)
+                    );
+
+                    // Ensure visual cues on new data
+                    ensureVisualCues(message.graph);
+
+                    // Update graph data
                     state.setGraphData(message.graph);
 
                     // Re-detect workflow groups
                     const newWorkflowGroups = detectWorkflowGroups(message.graph);
 
-                    // Merge workflow collapse states from old groups
-                    newWorkflowGroups.forEach((newG: any) => {
-                        const oldG = state.workflowGroups.find((og: any) => og.id === newG.id);
-                        if (oldG) {
-                            newG.collapsed = oldG.collapsed;
-                            const oldNodes = oldG.nodes.slice().sort();
-                            const newNodes = newG.nodes.slice().sort();
-                            const nodesChanged = JSON.stringify(oldNodes) !== JSON.stringify(newNodes);
-                            if (oldG.bounds && !nodesChanged) {
-                                newG.bounds = oldG.bounds;
-                                newG.centerX = oldG.centerX;
-                                newG.centerY = oldG.centerY;
-                            }
+                    // Restore collapsed states
+                    newWorkflowGroups.forEach((g: any) => {
+                        if (oldCollapsedIds.has(g.id)) {
+                            g.collapsed = true;
                         }
                     });
 
                     state.setWorkflowGroups(newWorkflowGroups);
 
-                    // Apply incremental DOM updates
-                    applyIncrementalUpdate(diff, savedState);
+                    // Clear all graph elements (keep pegboard bg and defs)
+                    state.g.selectAll('.groups, .collapsed-groups, .nodes-container, .edge-paths-container').remove();
 
-                    // Restore UI state
-                    restoreState(savedState);
+                    // Get defs from svg
+                    const defs = svg.select('defs');
 
-                    console.log('[webview] updateGraph: incremental update complete', {
-                        nodesAdded: diff.nodes.added.length,
-                        nodesRemoved: diff.nodes.removed.length,
-                        nodesUpdated: diff.nodes.updated.length,
-                        edgesAdded: diff.edges.added.length,
-                        edgesRemoved: diff.edges.removed.length
-                    });
+                    // Re-run layout
+                    layoutWorkflows(defs);
+
+                    // Re-render everything
+                    renderGroups(updateGroupVisibility);
+                    renderEdges();
+                    renderNodes(dragstarted, dragged, dragended);
+                    renderCollapsedGroups(updateGroupVisibility);
+
+                    // Restore zoom transform
+                    svg.call(zoom.transform, zoomTransform);
+
+                    // Re-render minimap
+                    renderMinimap();
+
+                    // Apply group visibility
+                    updateGroupVisibility();
 
                     // Update header stats
                     updateSnapshotStats(state.workflowGroups, state.currentGraphData);
+
+                    console.log('[webview] updateGraph: complete', {
+                        nodesAdded: addedCount,
+                        nodesRemoved: removedCount
+                    });
+
+                    // Show success
+                    indicator.className = 'loading-indicator success';
+                    iconSpan.textContent = '✓';
+                    textSpan.textContent = 'Graph updated';
+                    setTimeout(() => {
+                        indicator.classList.add('hidden');
+                        setTimeout(() => indicator.style.display = 'none', 300);
+                    }, 2000);
                 } else {
                     console.log('[webview] updateGraph: no graph data or preserveState=false');
                 }
