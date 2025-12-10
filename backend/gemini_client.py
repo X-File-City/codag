@@ -40,7 +40,12 @@ class GeminiClient:
 
         prompt = f"""You are a workflow analyzer. Analyze this code and create a complete workflow graph showing how data flows through the AI/LLM system.
 
-NOTE: Code may contain multiple files marked with "# File: path". Analyze them together as one cohesive workflow.
+INPUT FORMAT:
+- Code is wrapped in XML tags: <file path="filename" imports="...">code</file>
+- The "imports" attribute lists related files this file depends on
+- A <directory_structure> block shows the file tree for context
+- Analyze all files together as one cohesive workflow, using the imports to understand relationships
+
 IMPORTANT: Large codebases may include non-LLM files (auth, config, utils). Focus ONLY on files that contain or call LLM APIs.
 
 {metadata_str}
@@ -199,10 +204,105 @@ DETECT LLM PROVIDERS:
 - "OpenAI" for: openai, .chat.completions.create
 - "Anthropic" for: anthropic, .messages.create
 - "Google Gemini" for: google.generativeai, .generate_content
-- "Groq" for: groq
+- "Grok" for: api.x.ai, xai, grok (prefer "Grok" over "xAI" in labels)
+- "Groq" for: groq (note: different from Grok)
 - "Ollama" for: ollama
 - "Cohere" for: cohere
 - "Hugging Face" for: huggingface, transformers
+
+DETECT AI SERVICE PROVIDERS (Non-LLM):
+These services ARE part of AI workflows and MUST be included as pipeline nodes:
+
+- **Voice/TTS Services** (type: "integration"):
+  - ElevenLabs: api.elevenlabs.io, speech-to-speech, text-to-speech, voice clone
+  - Grok Voice / xAI: xai voice API
+  - Play.ht, Resemble.ai
+
+- **Video Generation** (type: "integration"):
+  - Runway: api.runwayml.com, api.dev.runwayml.com, image_to_video, gen4_turbo, act_two
+  - Stability AI: api.stability.ai, text-to-video, image-to-video
+  - Pika, Leonardo.ai
+
+- **Lip Sync / Face Animation** (type: "integration"):
+  - Sync Labs: api.sync.so, lipsync, lip-sync
+  - D-ID: api.d-id.com
+  - HeyGen: api.heygen.com
+
+- **Image Generation** (type: "integration"):
+  - Grok Image: xai image generation API
+  - Midjourney, DALL-E (non-SDK), Leonardo.ai, Ideogram
+
+CRITICAL FOR AI PIPELINES:
+1. Voice generation (TTS) → treat as AI node, NOT just "HTTP call"
+2. Video generation → treat as AI node
+3. Lip sync → treat as AI node
+4. Image generation → treat as AI node
+5. These form complete AI PIPELINES (e.g., Text → LLM → Voice → Lip Sync → Video = ONE workflow)
+
+NODE LABELING FOR AI SERVICES (CRITICAL):
+1. ALWAYS include PROVIDER NAME in labels:
+   - GOOD: "ElevenLabs TTS", "Runway Video Gen", "Sync Labs Lip Sync", "Grok Lyrics"
+   - BAD: "Speech to Audio", "Video Generation", "Lip Sync", "Generate Lyrics"
+
+2. For xAI services, use "Grok" in labels (more recognizable):
+   - GOOD: "Grok Lyrics", "Grok Image Gen"
+   - BAD: "xAI Call", "LLM Request"
+
+3. Include MODEL NAME in description when visible in code:
+   - model="gen4_turbo" → "Uses Runway gen4_turbo model..."
+   - model="lipsync-2" → "Uses Sync Labs lipsync-2 model..."
+   - model="grok-4-1-fast-reasoning" → "Uses Grok 4.1 Fast Reasoning..."
+   - model="eleven_multilingual_sts_v2" → "Uses ElevenLabs eleven_multilingual_sts_v2..."
+
+4. LABEL FORMAT: "[Provider] [Action]" (2-4 words):
+   - ElevenLabs: "ElevenLabs Clone", "ElevenLabs S2S", "ElevenLabs TTS"
+   - Runway: "Runway Video Gen", "Runway Lip Sync"
+   - Sync Labs: "Sync Labs Lip Sync"
+   - Grok: "Grok Lyrics", "Grok Analysis", "Grok Image"
+
+ORCHESTRATOR PATTERN ANALYSIS (CRITICAL FOR MULTI-AI PIPELINES):
+
+Many AI apps have ORCHESTRATOR files that coordinate multiple AI services in sequence.
+These are the MOST IMPORTANT files - they define the full workflow structure.
+
+HOW TO IDENTIFY ORCHESTRATORS:
+1. Files that IMPORT multiple AI service modules (e.g., imports from elevenlabs_api, runway_api, sync_labs_api)
+2. Functions that CALL multiple AI services in sequence
+3. Names containing: Pipeline, Manager, Orchestrator, Coordinator
+4. State machines or stage enums (e.g., BattleStage.VOICE_A, BattleStage.BEAT_GEN, BattleStage.LIPSYNC)
+
+WHEN YOU FIND AN ORCHESTRATOR - CREATE ONE UNIFIED WORKFLOW:
+1. The orchestrator function = ENTRY POINT (trigger node)
+2. Each AI service call = ONE NODE in the workflow
+3. Follow EXECUTION ORDER in the code
+4. Connect nodes based on data flow
+5. Create ONE workflow with ALL services, NOT separate workflows per service
+
+EXAMPLE - This orchestrator code:
+```
+from services.elevenlabs_api import create_style_reference
+from services.runway_api import generate_video_from_image
+from services.sync_labs_api import lipsync_video
+
+async def run_pipeline():
+    voice = create_style_reference(...)      # ElevenLabs
+    beat = generate_beat_pattern(...)        # Grok
+    video = generate_video_from_image(...)   # Runway
+    final = lipsync_video(...)               # Sync Labs
+```
+
+CORRECT: One workflow "Video Generation Pipeline" with 5 connected nodes
+WRONG: Four separate single-node workflows
+
+ANTI-PATTERN (DON'T DO):
+- Workflow 1: "ElevenLabs" (1 node)
+- Workflow 2: "Grok Beat" (1 node)
+- Workflow 3: "Runway" (1 node)
+- Workflow 4: "Sync Labs" (1 node)
+
+CORRECT PATTERN (DO THIS):
+- Workflow: "Video Generation Pipeline" (5+ nodes)
+  Entry → ElevenLabs Voice → Grok Beat → Runway Video → Sync Labs Lip Sync → Output
 
 LABEL AND DESCRIPTION REQUIREMENTS (CRITICAL):
 - "label": Must be 2-4 words maximum (e.g., "GPT-4 Call", "Format Request", "API Endpoint")
@@ -216,51 +316,60 @@ LABEL AND DESCRIPTION REQUIREMENTS (CRITICAL):
 - IMPORTANT: Be brief but clear - avoid verbose or overly detailed descriptions
 
 CRITICAL PATH ANALYSIS (EXECUTION TIME):
-Identify the LONGEST execution path (time-wise) from ONE entry point to ONE exit point. This is the critical path.
+The critical path is the LONGEST single execution path through the workflow.
 
-CRITICAL PATH DEFINITION - What is a "path"?
-A path is a CONNECTED sequence of edges where:
-- Edge 1 starts at the entry node
-- Each edge's TARGET node equals the NEXT edge's SOURCE node (edges chain together)
-- The final edge ends at the exit node
-- Example: A→B, B→C, C→D forms a valid path from A to D (B connects to B, C connects to C)
-- Example: A→B, C→D is NOT a valid path (B≠C, the edges don't connect!)
+WHAT IS A PATH? (CRITICAL - READ CAREFULLY):
+A path is a SINGLE LINEAR CHAIN of nodes. It CANNOT branch. Think of it like walking:
+- You start at one node (entry)
+- You walk to exactly ONE next node
+- You keep walking to exactly ONE next node each step
+- You end at one node (exit)
+
+A PATH CANNOT FORK. If you're at node A and it connects to both B and C, you must CHOOSE ONE.
+- VALID PATH: A → B → D → E (one node at each step)
+- INVALID "PATH": A → B AND A → C (this is a TREE, not a path!)
 
 Entry/Exit detection (MUST DO FIRST - CHECK ALL EDGES):
   * Entry nodes have ZERO incoming edges from ANY node in the ENTIRE graph
   * Exit nodes have ZERO outgoing edges to ANY node in the ENTIRE graph
-  * This includes cross-workflow edges - if ANY edge points to a node, it is NOT an entry point
-  * If a node receives data from ANY other node via an edge, it CANNOT be an entry point
   * Mark with "isEntryPoint": true or "isExitPoint": true
 
+WHEN TO MARK A CRITICAL PATH:
+- If the workflow has DECISION nodes or ANY branching → YOU MUST mark a critical path
+- If the workflow is LINEAR (no branching) → do NOT mark any critical path
+- IMPORTANT: If you create a decision node, you MUST also mark a critical path
+
+HOW TO IDENTIFY BRANCHING:
+- A node has 2+ outgoing edges = BRANCHING EXISTS → mark critical path
+- A decision node exists = BRANCHING EXISTS → mark critical path
+- Multiple paths lead to the same exit = BRANCHING EXISTS → mark critical path
+
 CRITICAL PATH RULES (STRICT - MUST ENFORCE):
-1. The critical path MUST START at an entry point node (isEntryPoint: true)
-2. The critical path MUST END at an exit point node (isExitPoint: true)
-3. The path MUST be CONNECTED - each edge's target = next edge's source
-4. The path MUST be SINGULAR and LINEAR - NO BRANCHING allowed
-5. If there's branching (e.g., if-else), choose ONLY the slowest branch
-6. The path structure: Entry Node → Intermediate → ... → Exit Node (full traversal)
-7. At each node, select ONLY ONE outgoing edge (the slowest next step)
-8. Mark BOTH nodes and edges on this singular path with "isCriticalPath": true
-9. All other paths (even if slow) should NOT be marked as critical
+1. The critical path is ONE SINGLE CHAIN from entry to exit - NO EXCEPTIONS
+2. Count the critical path nodes - each node can have AT MOST one critical outgoing edge
+3. If a node has 2+ outgoing edges marked critical, YOU ARE WRONG - pick only ONE
+4. The path MUST START at an entry point (isEntryPoint: true)
+5. The path MUST END at an exit point (isExitPoint: true)
+6. At branch points, choose the LONGEST/SLOWEST branch - mark ONLY that one branch
 
-Execution time considerations:
-- Consider: LLM API calls (slowest), network requests, file I/O, database queries
-- Look for: Large prompts (more tokens = longer), waits, loops, external dependencies
-- Example slow operations: LLM calls (1-5 sec), API requests (100-500ms), large file reads
-- Example fast operations: variable assignments, simple parsing, function calls
+EXAMPLE - Given this graph:
+  A (entry) → B → C (decision)
+                   ├→ D → F (exit)
+                   └→ E → F (exit)
 
-VALIDATION STEPS (PERFORM BEFORE FINALIZING):
-1. Find the first node in critical path - verify it has "isEntryPoint": true
-2. Find the last node in critical path - verify it has "isExitPoint": true
-3. Verify CONNECTIVITY: For each consecutive pair of critical edges, edge[i].target === edge[i+1].source
-4. Trace the path - it should form ONE continuous line with NO forks or gaps
-5. If edges don't chain together (disconnected), it's NOT a valid path - FIX IT
-6. EDGE SOURCE LOCATIONS: Verify each edge's sourceLocation follows data flow logic:
-   - Incoming edge (data entering node): sourceLocation points to where data is CREATED (in source node)
-   - Outgoing edge (data leaving node): sourceLocation points to where data is USED (in target node)
-   - This enables developers to trace actual data flow through the codebase
-   - NEVER point to function parameter lines or return statement lines
+CORRECT critical path (if D branch is longer): A → B → C → D → F
+  - 5 nodes marked critical, each with exactly 1 critical outgoing edge
+
+WRONG (marking both branches):
+  - A → B → C → D → F AND C → E → F  ← THIS IS WRONG! C has 2 critical outgoing edges
+
+VALIDATION (DO THIS BEFORE RETURNING):
+1. Check if ANY decision nodes exist OR any node has 2+ outgoing edges
+2. If YES → you MUST have a critical path marked. If none marked, GO BACK AND ADD ONE
+3. List all nodes with isCriticalPath: true
+4. For each critical node, count its outgoing edges that are also critical
+5. If ANY node has more than 1 critical outgoing edge → FIX IT (pick one branch only)
+6. Verify the path forms a single chain: entry → ... → exit with no forks
 
 WORKFLOW IDENTIFICATION (CRITICAL):
 Identify and name logical workflow groupings based on semantic purpose. Each workflow represents a cohesive unit of functionality.
@@ -480,7 +589,8 @@ IMPORTANT - Edge sourceLocation in this example:
   "workflows": [
     {{"id": "workflow_1", "name": "Code Analysis Pipeline", "description": "Receives code via API endpoint, analyzes it using Gemini LLM to extract workflow structure, and returns the parsed graph to the client.", "nodeIds": ["node1", "node2", "node3", "node4", "node5"]}}
   ],
-  "llms_detected": ["OpenAI"]
+  "llms_detected": ["OpenAI"],
+  "ai_services_detected": ["ElevenLabs", "Runway", "Sync Labs"]
 }}
 
 VALIDATION BEFORE RETURNING:

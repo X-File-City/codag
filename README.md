@@ -26,7 +26,7 @@ make setup  # Install all dependencies
 make run    # Start backend + launch extension
 ```
 
-Requirements: Python 3.8+, Node.js 16+, VSCode
+Requirements: Python 3.8+, Node.js 16+, VSCode 1.95+
 
 ## Setup
 
@@ -41,7 +41,22 @@ pip install -r requirements.txt
 
 Create `backend/.env`:
 ```bash
-GEMINI_API_KEY=your-key-here
+SECRET_KEY=your-secret-key
+GEMINI_API_KEY=your-gemini-key
+
+# PostgreSQL (for auth & trial tracking)
+DATABASE_URL=postgresql+asyncpg://localhost/codag
+
+# OAuth (optional - for sign-up flow)
+GITHUB_CLIENT_ID=xxx
+GITHUB_CLIENT_SECRET=xxx
+GOOGLE_CLIENT_ID=xxx
+GOOGLE_CLIENT_SECRET=xxx
+```
+
+Create the database:
+```bash
+createdb codag
 ```
 
 ### 2. Frontend Setup
@@ -127,7 +142,10 @@ The system identifies 8 node types:
 - **Critical path validation**: Enforces singular linear path from entry to exit
 - **Workflow connectivity**: All nodes in workflow must be reachable via edges
 
-**Note**: Auth is currently disabled (TODOs exist in code for re-enabling).
+**Authentication:**
+- **Trial Mode**: New users get 5 analyses/day tracked by VSCode `machineId`
+- **OAuth**: GitHub and Google sign-in for unlimited access
+- **URI Callback**: OAuth flow redirects via `vscode://codag/auth/callback`
 
 ## Development Commands
 

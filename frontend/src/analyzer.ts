@@ -34,6 +34,11 @@ export class WorkflowDetector {
         // Hugging Face
         /from\s+huggingface_hub\s+import|InferenceClient/,
         /from\s+['"]@huggingface\/inference['"]/,
+
+        // xAI/Grok
+        /from\s+xai\s+import|import\s+xai/,
+        /import\s+.*from\s+['"]xai['"]/,
+        /api\.x\.ai|xai\.com|XAI_API|GROK_API/,
     ];
 
     // LLM API Call Patterns
@@ -54,6 +59,46 @@ export class WorkflowDetector {
         /@tool\s*\(/,
         /tool_use/,
         /function_call/,
+    ];
+
+    // AI Service Domain Patterns (non-LLM AI APIs using raw HTTP)
+    private static readonly AI_SERVICE_DOMAINS = [
+        // Voice/TTS
+        /api\.elevenlabs\.io/,
+        /api\.resemble\.ai/,
+        /api\.play\.ht/,
+
+        // Video Generation
+        /api\.(dev\.)?runwayml\.com/,
+        /api\.stability\.ai/,
+        /api\.pika\.art/,
+
+        // Lip Sync / Face Animation
+        /api\.sync\.so/,
+        /api\.d-id\.com/,
+        /api\.heygen\.com/,
+
+        // Image Generation (non-SDK)
+        /api\.leonardo\.ai/,
+        /api\.ideogram\.ai/,
+
+        // xAI/Grok
+        /api\.x\.ai/,
+    ];
+
+    // AI API Endpoint Patterns
+    private static readonly AI_API_ENDPOINTS = [
+        // Voice/Audio
+        /speech-to-speech|text-to-speech|voice[_-]?clone|\/tts\b/i,
+
+        // Video
+        /image[_-]to[_-]video|video[_-]gen|act[_-]?two/i,
+
+        // Lip Sync
+        /lipsync|lip[_-]sync/i,
+
+        // Generation endpoints
+        /\/v\d+\/generate(?:\/|$)/i,
     ];
 
     // Streaming Patterns
@@ -393,6 +438,16 @@ export class WorkflowDetector {
             return true;
         }
 
+        // Pass 3: AI Service API detection (non-LLM AI services using HTTP)
+        // Check for AI service domains in strings (API URLs)
+        const hasAIServiceDomain = this.AI_SERVICE_DOMAINS.some(pattern => pattern.test(content));
+        const hasAIEndpoint = this.AI_API_ENDPOINTS.some(pattern => pattern.test(content));
+
+        // Match if file references AI service domains or AI-specific endpoints
+        if (hasAIServiceDomain || hasAIEndpoint) {
+            return true;
+        }
+
         // NOTE: Removed Pass 3 (Workflow Keywords) and Pass 4 (Workflow Filenames)
         // These were too broad and matched files that just imported workflow types
         // or had workflow-related names without actually calling LLMs.
@@ -405,7 +460,10 @@ export class WorkflowDetector {
     }
 
     static detectFramework(content: string): string | null {
-        // Check for LLM clients FIRST (more specific)
+        // Check xAI/Grok FIRST (uses OpenAI SDK with different base_url)
+        if (this.LLM_CLIENT_PATTERNS[15].test(content) || this.LLM_CLIENT_PATTERNS[16].test(content) || this.LLM_CLIENT_PATTERNS[17].test(content)) return 'grok';
+
+        // Check for LLM clients
         if (this.LLM_CLIENT_PATTERNS[0].test(content) || this.LLM_CLIENT_PATTERNS[1].test(content)) return 'openai';
         if (this.LLM_CLIENT_PATTERNS[2].test(content) || this.LLM_CLIENT_PATTERNS[3].test(content)) return 'anthropic';
         if (this.LLM_CLIENT_PATTERNS[4].test(content) || this.LLM_CLIENT_PATTERNS[5].test(content) || this.LLM_CLIENT_PATTERNS[6].test(content)) return 'gemini';
@@ -427,6 +485,43 @@ export class WorkflowDetector {
         }
 
         return null;
+    }
+
+    /**
+     * Detect ALL AI services/APIs in the content (not just the first one)
+     * Returns array of detected service names
+     */
+    static detectAllAIServices(content: string): string[] {
+        const detected: string[] = [];
+
+        // LLM Providers
+        if (this.LLM_CLIENT_PATTERNS[0].test(content) || this.LLM_CLIENT_PATTERNS[1].test(content)) detected.push('OpenAI');
+        if (this.LLM_CLIENT_PATTERNS[2].test(content) || this.LLM_CLIENT_PATTERNS[3].test(content)) detected.push('Anthropic');
+        if (this.LLM_CLIENT_PATTERNS[4].test(content) || this.LLM_CLIENT_PATTERNS[5].test(content) || this.LLM_CLIENT_PATTERNS[6].test(content)) detected.push('Gemini');
+        if (this.LLM_CLIENT_PATTERNS[7].test(content) || this.LLM_CLIENT_PATTERNS[8].test(content)) detected.push('Groq');
+        if (this.LLM_CLIENT_PATTERNS[9].test(content) || this.LLM_CLIENT_PATTERNS[10].test(content)) detected.push('Ollama');
+        if (this.LLM_CLIENT_PATTERNS[11].test(content) || this.LLM_CLIENT_PATTERNS[12].test(content)) detected.push('Cohere');
+        if (this.LLM_CLIENT_PATTERNS[13].test(content) || this.LLM_CLIENT_PATTERNS[14].test(content)) detected.push('HuggingFace');
+        if (this.LLM_CLIENT_PATTERNS[15].test(content) || this.LLM_CLIENT_PATTERNS[16].test(content) || this.LLM_CLIENT_PATTERNS[17].test(content)) detected.push('Grok');
+
+        // AI Service Domains
+        if (/api\.elevenlabs\.io|elevenlabs/i.test(content)) detected.push('ElevenLabs');
+        if (/api\.(dev\.)?runwayml\.com|runwayml|runway/i.test(content)) detected.push('Runway');
+        if (/api\.sync\.so|sync_labs|synclabs|lipsync/i.test(content)) detected.push('Sync Labs');
+        if (/api\.stability\.ai|stability/i.test(content)) detected.push('Stability AI');
+        if (/api\.d-id\.com|d-id/i.test(content)) detected.push('D-ID');
+        if (/api\.heygen\.com|heygen/i.test(content)) detected.push('HeyGen');
+        if (/api\.leonardo\.ai|leonardo/i.test(content)) detected.push('Leonardo.ai');
+        if (/a2e|audio2expression/i.test(content)) detected.push('A2E');
+
+        // Frameworks
+        for (const [framework, patterns] of Object.entries(this.FRAMEWORK_PATTERNS)) {
+            if (patterns.some(pattern => pattern.test(content))) {
+                detected.push(framework);
+            }
+        }
+
+        return [...new Set(detected)]; // Remove duplicates
     }
 
     static isWorkflowFile(uri: vscode.Uri): boolean {

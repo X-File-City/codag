@@ -1,19 +1,44 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from models import UserCreate, UserLogin, Token, User, AnalyzeRequest, WorkflowGraph
+from fastapi.responses import RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
+import secrets
+import json
+
+from models import (
+    UserCreate, UserLogin, Token, User, AnalyzeRequest, WorkflowGraph,
+    DeviceCheckRequest, DeviceCheckResponse, DeviceLinkRequest,
+    OAuthUser, AuthStateResponse
+)
 from auth import (
     get_password_hash,
     verify_password,
     create_access_token,
-    get_current_user,
-    check_rate_limit,
+    decode_token,
     users_db
+)
+from database import (
+    get_db, init_db,
+    get_or_create_trial_device, increment_trial_usage,
+    get_or_create_user, link_device_to_user
+)
+from oauth import (
+    oauth, get_github_user_info, get_google_user_info,
+    is_github_configured, is_google_configured
 )
 from gemini_client import gemini_client
 from analyzer import static_analyzer
-import json
+from config import settings
 
 app = FastAPI(title="Codag")
+
+# Add session middleware for OAuth state
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.secret_key,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,7 +46,231 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Remaining-Analyses"],
 )
+
+
+@app.on_event("startup")
+async def startup():
+    """Initialize database on startup."""
+    await init_db()
+
+
+# =============================================================================
+# Device/Trial Auth Endpoints
+# =============================================================================
+
+@app.post("/auth/device", response_model=DeviceCheckResponse)
+async def check_device(
+    request: DeviceCheckRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Check or register a trial device.
+    Returns remaining analyses for the day.
+    """
+    device, remaining = await get_or_create_trial_device(db, request.machine_id)
+
+    return DeviceCheckResponse(
+        machine_id=request.machine_id,
+        remaining_analyses=remaining,
+        is_trial=True,
+        is_authenticated=device.user_id is not None
+    )
+
+
+@app.post("/auth/device/link")
+async def link_device(
+    request: DeviceLinkRequest,
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Link a trial device to an authenticated user.
+    Called after OAuth signup.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    token = authorization.replace("Bearer ", "")
+    token_data = decode_token(token)
+
+    if not token_data.user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    import uuid
+    await link_device_to_user(db, request.machine_id, uuid.UUID(token_data.user_id))
+
+    return {"status": "linked"}
+
+
+# =============================================================================
+# OAuth Endpoints
+# =============================================================================
+
+@app.get("/auth/github")
+async def github_login(request: Request, state: Optional[str] = None):
+    """Redirect to GitHub OAuth."""
+    if not is_github_configured():
+        raise HTTPException(status_code=501, detail="GitHub OAuth not configured")
+
+    # Store state in session for CSRF protection
+    if state:
+        request.session['oauth_state'] = state
+
+    redirect_uri = f"{settings.backend_url}/auth/github/callback"
+    return await oauth.github.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/auth/github/callback")
+async def github_callback(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Handle GitHub OAuth callback."""
+    if not is_github_configured():
+        raise HTTPException(status_code=501, detail="GitHub OAuth not configured")
+
+    try:
+        token = await oauth.github.authorize_access_token(request)
+        user_info = await get_github_user_info(token)
+
+        if not user_info.get('email'):
+            # Redirect with error
+            return RedirectResponse(
+                url="vscode://codag.codag/auth/callback?error=no_email",
+                status_code=302
+            )
+
+        # Create or update user
+        user = await get_or_create_user(
+            db,
+            email=user_info['email'],
+            name=user_info.get('name'),
+            avatar_url=user_info.get('avatar_url'),
+            provider='github',
+            provider_id=user_info['provider_id'],
+        )
+
+        # Generate JWT with user_id
+        jwt_token = create_access_token({
+            "sub": user.email,
+            "user_id": str(user.id)
+        })
+
+        # Redirect back to VSCode extension
+        return RedirectResponse(
+            url=f"vscode://codag.codag/auth/callback?token={jwt_token}",
+            status_code=302
+        )
+    except Exception as e:
+        return RedirectResponse(
+            url=f"vscode://codag.codag/auth/callback?error={str(e)}",
+            status_code=302
+        )
+
+
+@app.get("/auth/google")
+async def google_login(request: Request, state: Optional[str] = None):
+    """Redirect to Google OAuth."""
+    if not is_google_configured():
+        raise HTTPException(status_code=501, detail="Google OAuth not configured")
+
+    # Store state in session for CSRF protection
+    if state:
+        request.session['oauth_state'] = state
+
+    redirect_uri = f"{settings.backend_url}/auth/google/callback"
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/auth/google/callback")
+async def google_callback(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Handle Google OAuth callback."""
+    if not is_google_configured():
+        raise HTTPException(status_code=501, detail="Google OAuth not configured")
+
+    try:
+        token = await oauth.google.authorize_access_token(request)
+        user_info = await get_google_user_info(token)
+
+        if not user_info.get('email'):
+            return RedirectResponse(
+                url="vscode://codag.codag/auth/callback?error=no_email",
+                status_code=302
+            )
+
+        # Create or update user
+        user = await get_or_create_user(
+            db,
+            email=user_info['email'],
+            name=user_info.get('name'),
+            avatar_url=user_info.get('avatar_url'),
+            provider='google',
+            provider_id=user_info['provider_id'],
+        )
+
+        # Generate JWT with user_id
+        jwt_token = create_access_token({
+            "sub": user.email,
+            "user_id": str(user.id)
+        })
+
+        # Redirect back to VSCode extension
+        return RedirectResponse(
+            url=f"vscode://codag.codag/auth/callback?token={jwt_token}",
+            status_code=302
+        )
+    except Exception as e:
+        return RedirectResponse(
+            url=f"vscode://codag.codag/auth/callback?error={str(e)}",
+            status_code=302
+        )
+
+
+@app.get("/auth/me", response_model=OAuthUser)
+async def get_me(
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get current authenticated user info."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    token = authorization.replace("Bearer ", "")
+    token_data = decode_token(token)
+
+    if not token_data.user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    from sqlalchemy import select
+    from database import UserDB
+    import uuid
+
+    result = await db.execute(
+        select(UserDB).where(UserDB.id == uuid.UUID(token_data.user_id))
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return OAuthUser(
+        id=str(user.id),
+        email=user.email,
+        name=user.name,
+        avatar_url=user.avatar_url,
+        provider=user.provider,
+        is_paid=user.is_paid
+    )
+
+
+# =============================================================================
+# Legacy Auth Endpoints (kept for backwards compatibility)
+# =============================================================================
 
 @app.post("/auth/register", response_model=Token)
 async def register(user: UserCreate):
@@ -39,6 +288,7 @@ async def register(user: UserCreate):
     token = create_access_token({"sub": user.email})
     return {"access_token": token, "token_type": "bearer"}
 
+
 @app.post("/auth/login", response_model=Token)
 async def login(user: UserLogin):
     user_data = users_db.get(user.email)
@@ -48,18 +298,61 @@ async def login(user: UserLogin):
     token = create_access_token({"sub": user.email})
     return {"access_token": token, "token_type": "bearer"}
 
-@app.get("/auth/me", response_model=User)
-async def me(current_user: User = Depends(get_current_user)):
-    return current_user
+
+# =============================================================================
+# Analysis Endpoint
+# =============================================================================
 
 @app.post("/analyze", response_model=WorkflowGraph)
 async def analyze_workflow(
     request: AnalyzeRequest,
-    # TODO: Re-enable auth when ready
-    # current_user: User = Depends(get_current_user)
+    response: Response,
+    x_device_id: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db)
 ):
-    # TODO: Re-enable rate limiting when ready
-    # check_rate_limit(current_user)
+    """
+    Analyze code for LLM workflow patterns.
+
+    Authentication:
+    - X-Device-ID header: Trial mode (5 analyses/day)
+    - Authorization: Bearer <token>: Authenticated mode (unlimited)
+    """
+    remaining_analyses = -1  # -1 means unlimited (authenticated)
+
+    # Check authentication
+    if authorization and authorization.startswith("Bearer "):
+        # Authenticated user - no rate limit for now
+        token = authorization.replace("Bearer ", "")
+        try:
+            token_data = decode_token(token)
+            # Valid token - unlimited access
+            remaining_analyses = -1
+        except HTTPException:
+            # Invalid token - fall through to device check
+            authorization = None
+
+    if not authorization and x_device_id:
+        # Trial mode - check and decrement quota
+        device, remaining = await get_or_create_trial_device(db, x_device_id)
+
+        if remaining <= 0:
+            response.headers["X-Remaining-Analyses"] = "0"
+            raise HTTPException(
+                status_code=429,
+                detail="Trial quota exhausted. Sign up for unlimited access."
+            )
+
+        # Decrement quota
+        remaining_analyses = await increment_trial_usage(db, x_device_id)
+        response.headers["X-Remaining-Analyses"] = str(remaining_analyses)
+
+    elif not authorization and not x_device_id:
+        # No auth at all - reject
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Provide X-Device-ID header for trial or Authorization header for full access."
+        )
 
     # Input validation
     MAX_CODE_SIZE = 5_000_000  # 5MB limit
@@ -161,9 +454,11 @@ async def analyze_workflow(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
 
 if __name__ == "__main__":
     import uvicorn

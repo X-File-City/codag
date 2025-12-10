@@ -500,6 +500,7 @@ export class StaticAnalyzer {
             const imports: string[] = [];
             const exports: string[] = [];
             const llmRelatedVariables = new Set<string>();
+            const aiServiceVariables = new Map<string, string>(); // Map variable name -> service URL for identifying service
             const seenLocations = new Set<string>(); // Track line+type to prevent duplicates
             const functionsWithLLMCode = new Set<string>(); // Track which functions use LLM code
             const decoratorCandidates: CodeLocation[] = []; // Store decorator triggers to filter later
@@ -507,13 +508,34 @@ export class StaticAnalyzer {
             const lines = code.split('\n');
             console.log(`[Python Analysis] Analyzing ${filePath} (${lines.length} lines)`);
 
+            // AI Service domain patterns for HTTP-based AI APIs
+            const aiServiceDomains = [
+                /api\.elevenlabs\.io/i,
+                /api\.(dev\.)?runwayml\.com/i,
+                /api\.sync\.so/i,
+                /api\.stability\.ai/i,
+                /api\.d-id\.com/i,
+                /api\.heygen\.com/i,
+                /api\.x\.ai/i,
+                /api\.leonardo\.ai/i,
+            ];
+
+            // AI-specific endpoint patterns
+            const aiEndpointPatterns = [
+                /speech-to-speech|text-to-speech|voice[_-]?clone/i,
+                /image[_-]to[_-]video|video[_-]gen/i,
+                /lipsync|lip[_-]sync/i,
+                /\/generate\b/i,
+            ];
+
             // Helper to check if identifier is LLM-related
             const isLLMIdentifier = (name: string): boolean => {
                 const llmPatterns = [
                     /genai/i, /gemini/i, /openai/i, /anthropic/i,
                     /groq/i, /ollama/i, /cohere/i, /gpt/i, /claude/i,
                     /llm/i, /model/i, /client/i, /chat/i, /completion/i,
-                    /GenerativeModel/i, /Gemini/i
+                    /GenerativeModel/i, /Gemini/i,
+                    /xai/i, /grok/i  // xAI/Grok
                 ];
                 return llmPatterns.some(pattern => pattern.test(name));
             };
@@ -642,6 +664,93 @@ export class StaticAnalyzer {
                                 description,
                                 function: currentFunction
                             });
+                        }
+                    }
+                }
+
+                // Track AI service HTTP calls (non-LLM AI APIs)
+                // Look for requests.post/get with AI service domains or endpoints
+                const httpCallMatch = line.match(/requests\.(post|get)\s*\(/);
+                if (httpCallMatch) {
+                    // Check current line and next 5 lines for AI service patterns
+                    // This handles multi-line function calls like:
+                    //   requests.post(
+                    //       f"{API_BASE}/chat/completions",  <- URL on next line
+                    const windowLines = lines.slice(i, Math.min(i + 6, lines.length)).join('\n');
+
+                    const hasAIServiceDomain = aiServiceDomains.some(pattern => pattern.test(windowLines));
+                    const hasAIEndpoint = aiEndpointPatterns.some(pattern => pattern.test(windowLines));
+
+                    // Check if window uses any variable that contains an AI service URL
+                    // This catches patterns like: requests.post(f"{API_BASE}/chat/completions")
+                    // where API_BASE = "https://api.x.ai/v1" was defined earlier
+                    const usesAIServiceVar = Array.from(llmRelatedVariables).some(
+                        varName => windowLines.includes(varName)
+                    );
+
+                    if (hasAIServiceDomain || hasAIEndpoint || usesAIServiceVar) {
+                        functionsWithLLMCode.add(currentFunction); // Mark function as using AI service
+                        let description = `HTTP ${httpCallMatch[1]} to AI service`;
+
+                        // Try to identify the specific service from window content
+                        if (/elevenlabs/i.test(windowLines)) description = 'ElevenLabs API call';
+                        else if (/runwayml/i.test(windowLines)) description = 'Runway API call';
+                        else if (/sync\.so/i.test(windowLines)) description = 'Sync Labs API call';
+                        else if (/x\.ai/i.test(windowLines)) description = 'Grok/xAI API call';
+                        else if (/stability/i.test(windowLines)) description = 'Stability AI API call';
+                        else if (/d-id/i.test(windowLines)) description = 'D-ID API call';
+                        else if (/heygen/i.test(windowLines)) description = 'HeyGen API call';
+                        // If service not detected from window, check stored AI service variable URLs
+                        else if (usesAIServiceVar) {
+                            // Find which AI service variable is being used and get its URL
+                            for (const [varName, serviceUrl] of aiServiceVariables) {
+                                if (windowLines.includes(varName)) {
+                                    // Identify service from the stored URL
+                                    if (/x\.ai/i.test(serviceUrl)) description = 'Grok/xAI API call';
+                                    else if (/elevenlabs/i.test(serviceUrl)) description = 'ElevenLabs API call';
+                                    else if (/runwayml/i.test(serviceUrl)) description = 'Runway API call';
+                                    else if (/sync\.so/i.test(serviceUrl)) description = 'Sync Labs API call';
+                                    else if (/stability/i.test(serviceUrl)) description = 'Stability AI API call';
+                                    else if (/d-id/i.test(serviceUrl)) description = 'D-ID API call';
+                                    else if (/heygen/i.test(serviceUrl)) description = 'HeyGen API call';
+                                    else if (/leonardo/i.test(serviceUrl)) description = 'Leonardo.ai API call';
+                                    else if (/a2e/i.test(serviceUrl)) description = 'A2E API call';
+                                    break;
+                                }
+                            }
+                        }
+
+                        addLocation({
+                            line: lineNum,
+                            column: line.indexOf('requests.'),
+                            type: 'integration',
+                            description,
+                            function: currentFunction
+                        });
+                    }
+                }
+
+                // Also check for AI service URLs in variable assignments (e.g., BASE_URL = "https://api.elevenlabs.io")
+                if (assignMatch) {
+                    const varName = assignMatch[2];
+                    const value = assignMatch[3];
+                    const hasAIServiceDomain = aiServiceDomains.some(pattern => pattern.test(value));
+
+                    // Check if value directly contains an AI service domain
+                    if (hasAIServiceDomain) {
+                        llmRelatedVariables.add(varName); // Track as AI-related variable
+                        aiServiceVariables.set(varName, value); // Store URL for service identification
+                    }
+                    // Also check if value references another AI service variable (transitive)
+                    // e.g., TTS_ENDPOINT = f"{BASE_URL}/api/v1/..."
+                    else if (Array.from(aiServiceVariables.keys()).some(aiVar => value.includes(aiVar))) {
+                        llmRelatedVariables.add(varName);
+                        // Inherit the service URL from the referenced variable
+                        for (const [aiVar, serviceUrl] of aiServiceVariables) {
+                            if (value.includes(aiVar)) {
+                                aiServiceVariables.set(varName, serviceUrl);
+                                break;
+                            }
                         }
                     }
                 }

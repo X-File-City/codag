@@ -1,83 +1,348 @@
 import * as vscode from 'vscode';
 import { APIClient } from './api';
 
+export type OAuthProvider = 'github' | 'google';
+
+export interface AuthState {
+    isAuthenticated: boolean;
+    isTrial: boolean;
+    remainingAnalyses: number;
+    user?: {
+        id: string;
+        email: string;
+        name?: string;
+        avatar_url?: string;
+        provider: OAuthProvider;
+        is_paid: boolean;
+    };
+}
+
 export class AuthManager {
     private static readonly TOKEN_KEY = 'codag.token';
+    private static readonly AUTH_STATE_KEY = 'codag.authState';
+
+    private authState: AuthState = {
+        isAuthenticated: false,
+        isTrial: true,
+        remainingAnalyses: 5,
+    };
+
+    // Callback to notify webview of auth state changes
+    private onAuthStateChange?: (state: AuthState) => void;
 
     constructor(
         private context: vscode.ExtensionContext,
         private api: APIClient
     ) {
-        const token = this.getToken();
+        // Set device ID on API client
+        this.api.setDeviceId(this.getDeviceId());
+
+        // Load cached auth state (for user info display before async init)
+        const cachedState = this.context.globalState.get<AuthState>(AuthManager.AUTH_STATE_KEY);
+        if (cachedState) {
+            this.authState = cachedState;
+        }
+
+        // Listen for token changes from other windows
+        this.context.secrets.onDidChange(async (e) => {
+            if (e.key === AuthManager.TOKEN_KEY) {
+                await this.handleTokenChange();
+            }
+        });
+    }
+
+    /**
+     * Initialize the auth manager asynchronously.
+     * Must be called after construction to load token from secure storage.
+     */
+    async initialize(): Promise<void> {
+        const token = await this.getToken();
+        const cachedState = this.context.globalState.get<AuthState>(AuthManager.AUTH_STATE_KEY);
+        console.log('[auth] initialize: token exists =', !!token, ', cachedState =', !!cachedState);
+
         if (token) {
+            console.log('[auth] initialize: Setting token on API client');
             this.api.setToken(token);
+            this.authState = {
+                isAuthenticated: true,
+                isTrial: false,
+                remainingAnalyses: -1,
+                user: cachedState?.user,
+            };
+            console.log('[auth] initialize: Auth state set to authenticated');
+        } else {
+            console.log('[auth] initialize: No token found');
         }
     }
 
-    private getToken(): string | undefined {
-        return this.context.globalState.get(AuthManager.TOKEN_KEY);
+    /**
+     * Handle token changes from other windows.
+     */
+    private async handleTokenChange(): Promise<void> {
+        const token = await this.getToken();
+        if (token) {
+            // Token was set in another window - validate and update state
+            this.api.setToken(token);
+            try {
+                const user = await this.api.getUser();
+                this.authState = {
+                    isAuthenticated: true,
+                    isTrial: false,
+                    remainingAnalyses: -1,
+                    user: user,
+                };
+                await this.saveAuthState();
+            } catch {
+                // Token invalid
+                await this.clearToken();
+            }
+        } else {
+            // Token was cleared in another window - reset to trial
+            this.api.clearToken();
+            this.authState = {
+                isAuthenticated: false,
+                isTrial: true,
+                remainingAnalyses: 5,
+                user: undefined,
+            };
+            await this.saveAuthState();
+            await this.checkTrialStatus();
+        }
     }
 
-    private async setToken(token: string) {
-        await this.context.globalState.update(AuthManager.TOKEN_KEY, token);
+    /**
+     * Set callback for auth state changes.
+     * Used to update webview when auth state changes.
+     */
+    setOnAuthStateChange(callback: (state: AuthState) => void): void {
+        this.onAuthStateChange = callback;
+    }
+
+    /**
+     * Get the device ID for trial tracking.
+     * Uses VSCode's machineId which is unique per installation.
+     */
+    getDeviceId(): string {
+        return vscode.env.machineId;
+    }
+
+    /**
+     * Get the current auth token if available.
+     * Uses SecretStorage for secure, cross-window persistent storage.
+     */
+    private async getToken(): Promise<string | undefined> {
+        return this.context.secrets.get(AuthManager.TOKEN_KEY);
+    }
+
+    /**
+     * Store the auth token.
+     * Uses SecretStorage - triggers onDidChange in other windows.
+     */
+    private async setToken(token: string): Promise<void> {
+        await this.context.secrets.store(AuthManager.TOKEN_KEY, token);
         this.api.setToken(token);
     }
 
-    private async clearToken() {
-        await this.context.globalState.update(AuthManager.TOKEN_KEY, undefined);
+    /**
+     * Clear the auth token.
+     * Uses SecretStorage - triggers onDidChange in other windows.
+     */
+    private async clearToken(): Promise<void> {
+        await this.context.secrets.delete(AuthManager.TOKEN_KEY);
         this.api.clearToken();
     }
 
-    async login() {
-        const email = await vscode.window.showInputBox({
-            prompt: 'Enter your email',
-            placeHolder: 'email@example.com'
-        });
-        if (!email) return;
+    /**
+     * Save auth state to storage and notify listeners.
+     */
+    private async saveAuthState(): Promise<void> {
+        await this.context.globalState.update(AuthManager.AUTH_STATE_KEY, this.authState);
+        this.onAuthStateChange?.(this.authState);
+    }
 
-        const password = await vscode.window.showInputBox({
-            prompt: 'Enter your password',
-            password: true
-        });
-        if (!password) return;
+    /**
+     * Get the current auth state.
+     */
+    getAuthState(): AuthState {
+        return { ...this.authState };
+    }
 
+    /**
+     * Check trial status with backend.
+     * Also validates stored token if present.
+     * Returns remaining analyses.
+     */
+    async checkTrialStatus(): Promise<number> {
         try {
-            const token = await this.api.login(email, password);
-            await this.setToken(token);
-            vscode.window.showInformationMessage('Logged in successfully');
-        } catch (error: any) {
-            vscode.window.showErrorMessage(`Login failed: ${error.response?.data?.detail || error.message}`);
+            // If we have a stored token, validate it first
+            const token = await this.getToken();
+            console.log('[auth] checkTrialStatus: token exists =', !!token);
+            if (token) {
+                try {
+                    console.log('[auth] Validating stored token...');
+                    const user = await this.api.getUser();
+                    console.log('[auth] Token valid, user:', user?.email);
+                    // Token valid - update user info
+                    this.authState = {
+                        isAuthenticated: true,
+                        isTrial: false,
+                        remainingAnalyses: -1, // Unlimited
+                        user: user,
+                    };
+                    await this.saveAuthState();
+                    return -1;
+                } catch (error: any) {
+                    // Token invalid - clear it and fall through to trial check
+                    console.log('[auth] Stored token invalid:', error.message, error.response?.status, error.response?.data);
+                    await this.clearToken();
+                    this.authState = {
+                        isAuthenticated: false,
+                        isTrial: true,
+                        remainingAnalyses: 5,
+                        user: undefined,
+                    };
+                }
+            }
+
+            // Check trial status
+            const response = await this.api.checkDevice(this.getDeviceId());
+            this.authState.remainingAnalyses = response.remaining_analyses;
+            this.authState.isTrial = response.is_trial && !response.is_authenticated;
+            this.authState.isAuthenticated = response.is_authenticated;
+            await this.saveAuthState();
+            return response.remaining_analyses;
+        } catch (error) {
+            console.error('Failed to check trial status:', error);
+            return this.authState.remainingAnalyses;
         }
     }
 
-    async register() {
-        const email = await vscode.window.showInputBox({
-            prompt: 'Enter your email',
-            placeHolder: 'email@example.com'
-        });
-        if (!email) return;
+    /**
+     * Update remaining analyses count.
+     * Called after each analysis.
+     */
+    async updateRemainingAnalyses(remaining: number): Promise<void> {
+        this.authState.remainingAnalyses = remaining;
+        await this.saveAuthState();
+    }
 
-        const password = await vscode.window.showInputBox({
-            prompt: 'Enter your password (min 8 chars)',
-            password: true
-        });
-        if (!password) return;
+    /**
+     * Start OAuth flow for the given provider.
+     * Opens browser to backend OAuth endpoint.
+     */
+    async startOAuth(provider: OAuthProvider): Promise<void> {
+        const state = this.generateRandomState();
+        await this.context.globalState.update('codag.oauth_state', state);
 
+        const baseUrl = this.api.getBaseUrl();
+        const url = `${baseUrl}/auth/${provider}?state=${state}`;
+
+        await vscode.env.openExternal(vscode.Uri.parse(url));
+    }
+
+    /**
+     * Handle OAuth callback from URI handler.
+     * Called when vscode://codag/auth/callback is triggered.
+     */
+    async handleOAuthCallback(token: string): Promise<void> {
         try {
-            const token = await this.api.register(email, password);
             await this.setToken(token);
-            vscode.window.showInformationMessage('Registered successfully! Free trial: 10 requests/day');
+
+            // Link device to user
+            await this.api.linkDevice(this.getDeviceId());
+
+            // Get user info
+            const user = await this.api.getUser();
+
+            // Update auth state
+            this.authState = {
+                isAuthenticated: true,
+                isTrial: false,
+                remainingAnalyses: -1, // Unlimited
+                user: user,
+            };
+
+            await this.saveAuthState();
+
+            vscode.window.showInformationMessage('Signed in successfully!');
         } catch (error: any) {
-            vscode.window.showErrorMessage(`Registration failed: ${error.response?.data?.detail || error.message}`);
+            console.error('OAuth callback failed:', error);
+            vscode.window.showErrorMessage(`Sign in failed: ${error.message}`);
         }
     }
 
-    async logout() {
+    /**
+     * Handle OAuth error from URI handler.
+     */
+    handleOAuthError(error: string): void {
+        console.error('OAuth error:', error);
+
+        let message = 'Sign in failed';
+        if (error === 'no_email') {
+            message = 'Could not get email from OAuth provider. Please ensure your email is public or verified.';
+        } else {
+            message = `Sign in failed: ${error}`;
+        }
+
+        vscode.window.showErrorMessage(message);
+    }
+
+    /**
+     * Sign out and clear auth state.
+     */
+    async logout(): Promise<void> {
         await this.clearToken();
-        vscode.window.showInformationMessage('Logged out');
+
+        // Reset to trial state
+        this.authState = {
+            isAuthenticated: false,
+            isTrial: true,
+            remainingAnalyses: 5,
+            user: undefined,
+        };
+
+        await this.saveAuthState();
+
+        // Check actual trial status
+        await this.checkTrialStatus();
+
+        vscode.window.showInformationMessage('Signed out');
     }
 
+    /**
+     * Check if user is authenticated (not trial).
+     */
     isAuthenticated(): boolean {
-        return !!this.getToken();
+        return this.authState.isAuthenticated && !this.authState.isTrial;
+    }
+
+    /**
+     * Check if user has analyses remaining.
+     */
+    hasAnalysesRemaining(): boolean {
+        if (this.isAuthenticated()) {
+            return true; // Unlimited for authenticated users
+        }
+        return this.authState.remainingAnalyses > 0;
+    }
+
+    /**
+     * Generate random state for OAuth CSRF protection.
+     */
+    private generateRandomState(): string {
+        const array = new Uint8Array(32);
+        require('crypto').randomFillSync(array);
+        return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+
+    // Legacy methods for backwards compatibility
+    async login(): Promise<void> {
+        // Redirect to OAuth
+        await this.startOAuth('github');
+    }
+
+    async register(): Promise<void> {
+        // Redirect to OAuth
+        await this.startOAuth('github');
     }
 }

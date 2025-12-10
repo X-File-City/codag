@@ -1,6 +1,6 @@
 // Edge rendering and hover effects
 import * as state from './state';
-import { generateEdgePath, getNodeOrCollapsedGroup } from './utils';
+import { generateEdgePath, getNodeOrCollapsedGroup, getVirtualNodeId, getNodeWorkflowCount, getOriginalNodeId } from './utils';
 import {
     NODE_WIDTH, NODE_HEIGHT,
     EDGE_STROKE_WIDTH, EDGE_HOVER_STROKE_WIDTH, EDGE_HOVER_HIT_WIDTH,
@@ -10,6 +10,11 @@ import { getWorkflowNodeIds, getNodeDimensions, findReverseEdge, getBidirectiona
 
 declare const d3: any;
 
+// Get expanded nodes from state (created by layoutWorkflows)
+export function getExpandedNodes(): any[] {
+    return state.expandedNodes;
+}
+
 export function renderEdges(): void {
     const { g, currentGraphData, workflowGroups } = state;
 
@@ -17,9 +22,37 @@ export function renderEdges(): void {
     const allWorkflowNodeIds = getWorkflowNodeIds(workflowGroups);
 
     // Filter edges to only those where BOTH nodes are rendered
-    const allEdges = currentGraphData.edges.filter((e: any) =>
+    const baseEdges = currentGraphData.edges.filter((e: any) =>
         allWorkflowNodeIds.has(e.source) && allWorkflowNodeIds.has(e.target)
     );
+
+    // Transform edges to use virtual IDs for shared nodes
+    const allEdges: any[] = [];
+    baseEdges.forEach((edge: any) => {
+        const sourceIsShared = getNodeWorkflowCount(edge.source, workflowGroups) > 1;
+        const targetIsShared = getNodeWorkflowCount(edge.target, workflowGroups) > 1;
+
+        if (!sourceIsShared && !targetIsShared) {
+            // Neither endpoint is shared - keep as-is
+            allEdges.push(edge);
+        } else {
+            // Find which workflow(s) this edge belongs to (both endpoints in same workflow)
+            workflowGroups.forEach((wf: any) => {
+                const sourceInWf = wf.nodes.includes(edge.source);
+                const targetInWf = wf.nodes.includes(edge.target);
+                if (sourceInWf && targetInWf) {
+                    // Create edge with virtual IDs for this workflow
+                    allEdges.push({
+                        ...edge,
+                        source: sourceIsShared ? getVirtualNodeId(edge.source, wf.id) : edge.source,
+                        target: targetIsShared ? getVirtualNodeId(edge.target, wf.id) : edge.target,
+                        _originalSource: edge.source,
+                        _originalTarget: edge.target
+                    });
+                }
+            });
+        }
+    });
 
     // Track which bidirectional pairs we've already processed
     const processedBidirectional = new Set<string>();
@@ -119,17 +152,41 @@ export function renderEdges(): void {
             }
         });
 
+    // Helper to find node by ID (check expanded nodes first, then original)
+    const findNode = (nodeId: string) => {
+        // Check expanded nodes (includes virtual copies)
+        const expanded = state.expandedNodes.find((n: any) => n.id === nodeId);
+        if (expanded && typeof expanded.x === 'number' && !isNaN(expanded.x)) return expanded;
+
+        // Check original nodes
+        const original = currentGraphData.nodes.find((n: any) => n.id === nodeId);
+        if (original && typeof original.x === 'number' && !isNaN(original.x)) return original;
+
+        // For virtual IDs (node__workflow), try original ID
+        const baseId = nodeId.includes('__') ? nodeId.split('__')[0] : null;
+        if (baseId) {
+            const baseNode = state.expandedNodes.find((n: any) => n.id === baseId)
+                || currentGraphData.nodes.find((n: any) => n.id === baseId);
+            if (baseNode && typeof baseNode.x === 'number' && !isNaN(baseNode.x)) return baseNode;
+        }
+
+        console.warn(`[edges] Node not found: ${nodeId}`);
+        return null;
+    };
+
     // Set initial edge paths
     link.attr('d', (d: any) => {
-        const sourceNode = currentGraphData.nodes.find((n: any) => n.id === d.source);
-        const targetNode = currentGraphData.nodes.find((n: any) => n.id === d.target);
-        return generateEdgePath(d, sourceNode, targetNode, workflowGroups, NODE_WIDTH, NODE_HEIGHT, NODE_WIDTH, NODE_HEIGHT, currentGraphData.edges);
+        const sourceNode = findNode(d.source);
+        const targetNode = findNode(d.target);
+        if (!sourceNode || !targetNode) return '';
+        return generateEdgePath(d, sourceNode, targetNode, workflowGroups, NODE_WIDTH, NODE_HEIGHT, NODE_WIDTH, NODE_HEIGHT, allEdges);
     });
 
     linkHover.attr('d', (d: any) => {
-        const sourceNode = currentGraphData.nodes.find((n: any) => n.id === d.source);
-        const targetNode = currentGraphData.nodes.find((n: any) => n.id === d.target);
-        return generateEdgePath(d, sourceNode, targetNode, workflowGroups, NODE_WIDTH, NODE_HEIGHT, NODE_WIDTH, NODE_HEIGHT, currentGraphData.edges);
+        const sourceNode = findNode(d.source);
+        const targetNode = findNode(d.target);
+        if (!sourceNode || !targetNode) return '';
+        return generateEdgePath(d, sourceNode, targetNode, workflowGroups, NODE_WIDTH, NODE_HEIGHT, NODE_WIDTH, NODE_HEIGHT, allEdges);
     });
 
     state.setLinkSelections(link, linkHover, linkGroup);
@@ -198,13 +255,23 @@ function updateTooltipPosition(event: any): void {
 }
 
 export function updateEdgePaths(): void {
-    const { link, linkHover, currentGraphData, workflowGroups } = state;
+    const { link, linkHover, currentGraphData, workflowGroups, expandedNodes } = state;
 
-    const getNode = (nodeId: string) => getNodeOrCollapsedGroup(nodeId, currentGraphData.nodes, workflowGroups);
+    // Helper to find node (check expanded nodes first for virtual IDs)
+    const getNode = (nodeId: string) => {
+        // First check expanded nodes
+        const expanded = expandedNodes.find((n: any) => n.id === nodeId);
+        if (expanded && typeof expanded.x === 'number' && !isNaN(expanded.x)) return expanded;
+        // Then check collapsed groups and original nodes
+        const node = getNodeOrCollapsedGroup(nodeId, currentGraphData.nodes, workflowGroups);
+        if (node && typeof node.x === 'number' && !isNaN(node.x)) return node;
+        return null;
+    };
 
     link.attr('d', function(l: any) {
         const sourceNode = getNode(l.source);
         const targetNode = getNode(l.target);
+        if (!sourceNode || !targetNode) return '';
         const { width: targetWidth, height: targetHeight } = getNodeDimensions(targetNode);
         const { width: sourceWidth, height: sourceHeight } = getNodeDimensions(sourceNode);
         return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight, sourceWidth, sourceHeight, currentGraphData.edges);
@@ -213,6 +280,7 @@ export function updateEdgePaths(): void {
     linkHover.attr('d', function(l: any) {
         const sourceNode = getNode(l.source);
         const targetNode = getNode(l.target);
+        if (!sourceNode || !targetNode) return '';
         const { width: targetWidth, height: targetHeight } = getNodeDimensions(targetNode);
         const { width: sourceWidth, height: sourceHeight } = getNodeDimensions(sourceNode);
         return generateEdgePath(l, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight, sourceWidth, sourceHeight, currentGraphData.edges);

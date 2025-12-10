@@ -22,7 +22,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Webview displays interactive graph with clickable nodes (`frontend/src/webview.ts`)
 
 **Key Design Decisions:**
-- Auth is **disabled** (TODOs in code for re-enabling)
 - Multi-file analysis: Combines files with `# File: path` markers
 - Deterministic LLM output: Temperature 0.0, specific prompt structure
 - **AST-aware caching**: Only hashes LLM-relevant code (ignores comments/whitespace changes)
@@ -64,9 +63,11 @@ npm run compile     # Compile TypeScript
 - `backend/gemini_client.py` - LLM prompt for workflow extraction with strict validation rules (lines 17-280)
   - Critical path rules: Must start at entry, end at exit, no branching (lines 207-235)
   - Workflow connectivity validation: All nodes must be reachable (lines 262-279)
-- `backend/models.py` - Pydantic models including `WorkflowGraph`, `SourceLocation`, `WorkflowNode`
+- `backend/models.py` - Pydantic models including `WorkflowGraph`, `SourceLocation`, `WorkflowNode`, `OAuthUser`, `DeviceCheckResponse`
 - `backend/analyzer.py` - Static analysis patterns for LLM detection
-- `backend/main.py` - FastAPI server with `/analyze` endpoint
+- `backend/main.py` - FastAPI server with `/analyze`, OAuth endpoints (`/auth/github`, `/auth/google`, `/auth/device`)
+- `backend/database.py` - Async SQLAlchemy models (`UserDB`, `TrialDeviceDB`), PostgreSQL connection
+- `backend/oauth.py` - GitHub/Google OAuth configuration via authlib
 
 **Frontend:**
 - `frontend/src/extension.ts` - VSCode commands, analysis orchestration, timing logs, handles `openFile` messages
@@ -82,6 +83,9 @@ npm run compile     # Compile TypeScript
 - `frontend/src/cache.ts` - Per-file caching with AST-aware hashing (`getPerFile`, `setPerFile`, `getMultiplePerFile`)
 - `frontend/src/static-analyzer.ts` - TypeScript/Python AST parsing for LLM-relevant code extraction
 - `frontend/src/metadata-builder.ts` - File dependency analysis and batching logic
+- `frontend/src/auth.ts` - AuthManager class, OAuth flow, device ID tracking via `vscode.env.machineId`
+- `frontend/src/api.ts` - APIClient with `X-Device-ID` header, `TrialExhaustedError` handling
+- `frontend/src/webview-client/auth.ts` - Auth panel UI logic, trial tag updates
 
 ## Workflow Node Types
 
@@ -148,11 +152,56 @@ Each node includes `source: {file, line, function}` for code navigation.
 - **Minimap**: Bottom-left corner with viewport rectangle
 - **Legend**: Bottom-left above minimap, shows entry/exit/critical path indicators
 
+## Authentication & Trial System
+
+**User Flow:**
+1. New users start in **trial mode** (no sign-up required)
+2. Trial: 5 analyses/day, tracked by `vscode.env.machineId`
+3. Header shows "TRIAL 5/5" tag + "Sign Up" button
+4. Clicking "Sign Up" or exhausting trial opens auth panel
+5. OAuth via GitHub or Google grants unlimited access
+
+**Architecture:**
+- `backend/database.py` - PostgreSQL models (`users`, `trial_devices`)
+- `backend/oauth.py` - GitHub/Google OAuth handlers via authlib
+- `backend/main.py` - OAuth endpoints (`/auth/github`, `/auth/google`, `/auth/device`)
+- `frontend/src/auth.ts` - AuthManager with OAuth flow, device ID tracking
+- `frontend/src/webview-client/auth.ts` - Auth panel UI logic
+
+**OAuth Flow:**
+1. User clicks OAuth button → extension opens browser
+2. Browser → `http://localhost:8000/auth/github` (or google)
+3. Provider authenticates → callback to backend
+4. Backend creates JWT → redirects to `vscode://codag/auth/callback?token=xxx`
+5. Extension URI handler receives token, stores in globalState
+6. Device linked to user for future tracking
+
+**Key Files:**
+- `backend/database.py` - SQLAlchemy models, trial quota logic
+- `backend/oauth.py` - OAuth provider configuration
+- `frontend/src/auth.ts` - AuthManager class
+- `frontend/src/webview-client/auth.ts` - Auth panel handlers
+- `frontend/media/webview/index.html` - Auth section + panel HTML
+- `frontend/media/webview/styles.css` - Auth styles
+
 ## Environment
 
 Requires `backend/.env` with:
 ```
-GEMINI_API_KEY=your-key-here
+SECRET_KEY=your-secret-key
+GEMINI_API_KEY=your-gemini-key
+DATABASE_URL=postgresql+asyncpg://localhost/codag
+
+# OAuth credentials
+GITHUB_CLIENT_ID=xxx
+GITHUB_CLIENT_SECRET=xxx
+GOOGLE_CLIENT_ID=xxx
+GOOGLE_CLIENT_SECRET=xxx
+```
+
+Database setup:
+```bash
+createdb codag  # Tables auto-created on startup
 ```
 
 Backend logs to `backend.log`, PID stored in `backend.pid`.

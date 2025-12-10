@@ -67,7 +67,7 @@ export interface WorkflowGroup {
     name: string;
     description?: string;
     nodes: string[];
-    llmProvider: string;
+    llmProviders: string;
     collapsed: boolean;
     color: string;
     level: number;

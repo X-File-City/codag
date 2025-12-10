@@ -3,6 +3,7 @@ import * as state from './state';
 import { generateEdgePath, getNodeOrCollapsedGroup } from './utils';
 import { getNodeDimensions, areNodesInSameCollapsedGroup } from './helpers';
 import { populateDirectory } from './directory';
+import { getExpandedNodes } from './edges';
 
 declare const d3: any;
 
@@ -36,7 +37,12 @@ export function updateGroupVisibility(): void {
 
     // Hide nodes that are in collapsed groups
     node.style('display', (d: any) => {
-        const inCollapsedGroup = workflowGroups.some((g: any) => g.collapsed && g.nodes.includes(d.id));
+        const nodeId = d._originalId || d.id;
+        const nodeWorkflowId = d._workflowId;
+        const inCollapsedGroup = workflowGroups.some((g: any) =>
+            g.collapsed && g.nodes.includes(nodeId) &&
+            (nodeWorkflowId ? g.id === nodeWorkflowId : true)
+        );
         return inCollapsedGroup ? 'none' : 'block';
     });
 
@@ -44,7 +50,13 @@ export function updateGroupVisibility(): void {
     linkGroup.style('display', 'block');
 
     // Update edge paths to route to collapsed groups
-    const getNode = (nodeId: string) => getNodeOrCollapsedGroup(nodeId, currentGraphData.nodes, workflowGroups);
+    const expandedNodes = getExpandedNodes();
+    const getNode = (nodeId: string) => {
+        // Check expanded nodes first (for virtual IDs)
+        const expanded = expandedNodes.find((n: any) => n.id === nodeId);
+        if (expanded) return expanded;
+        return getNodeOrCollapsedGroup(nodeId, currentGraphData.nodes, workflowGroups);
+    };
 
     link.attr('d', function(this: SVGPathElement, l: any) {
         const sourceNode = getNode(l.source);

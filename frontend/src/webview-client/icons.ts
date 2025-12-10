@@ -1,5 +1,8 @@
 // SVG icons for node types
 
+// Shared node indicator icon (overlapping squares)
+export const sharedIcon = '<svg viewBox="0 0 16 16" width="12" height="12"><rect x="1" y="4" width="8" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="5" y="1" width="8" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>';
+
 export function getNodeIcon(type: string): string {
     const icons: Record<string, string> = {
         trigger: '<svg viewBox="0 0 24 24" width="24" height="24"><path d="M13 3v7h9l-9 11v-7H4l9-11z" fill="currentColor"/></svg>',

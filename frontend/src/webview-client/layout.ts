@@ -1,6 +1,6 @@
 // Dagre layout and workflow stacking
 import * as state from './state';
-import { snapToGrid, getNodeWorkflowCount } from './utils';
+import { snapToGrid, getNodeWorkflowCount, getVirtualNodeId } from './utils';
 import { createWorkflowPattern } from './setup';
 import { calculateGroupBounds } from './helpers';
 import { measureTextWidth } from './groups';
@@ -20,14 +20,10 @@ export function layoutWorkflows(defs: any): void {
     let currentYOffset = 0;
 
     workflowGroups.forEach((group, idx) => {
+
         // Get ALL nodes in this workflow (including shared nodes)
         const allGroupNodes = currentGraphData.nodes.filter((n: any) =>
             group.nodes.includes(n.id)
-        );
-
-        // Get ONLY exclusive nodes (for bounds calculation)
-        const exclusiveGroupNodes = allGroupNodes.filter((n: any) =>
-            getNodeWorkflowCount(n.id, workflowGroups) === 1
         );
 
         // Skip groups with less than 3 nodes total
@@ -62,27 +58,52 @@ export function layoutWorkflows(defs: any): void {
         // Apply positions to ALL nodes with Y offset
         allGroupNodes.forEach((node: any) => {
             const pos = dagreGraph.node(node.id);
+            const isShared = getNodeWorkflowCount(node.id, workflowGroups) > 1;
+            let x: number, y: number;
+
             if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number' ||
                 isNaN(pos.x) || isNaN(pos.y)) {
                 console.warn(`Invalid position for node ${node.id} (${node.label}), using fallback`);
-                node.x = 0;
-                node.y = currentYOffset;
+                x = 0;
+                y = currentYOffset;
             } else {
-                node.x = snapToGrid(pos.x);
-                node.y = snapToGrid(pos.y + currentYOffset);
+                x = snapToGrid(pos.x);
+                y = snapToGrid(pos.y + currentYOffset);
             }
-            node.fx = node.x;
-            node.fy = node.y;
-            originalPositions.set(node.id, { x: node.x, y: node.y });
+
+            // For shared nodes, store position under virtual ID (so each workflow copy has its own position)
+            // For non-shared nodes, store under original ID and also update node object
+            if (isShared) {
+                const virtualId = getVirtualNodeId(node.id, group.id);
+                originalPositions.set(virtualId, { x, y });
+            } else {
+                node.x = x;
+                node.y = y;
+                node.fx = x;
+                node.fy = y;
+                originalPositions.set(node.id, { x, y });
+            }
         });
 
-        // Calculate bounds ONLY from exclusive nodes
-        if (exclusiveGroupNodes.length === 0) {
-            console.warn(`Workflow "${group.name}" has only shared nodes, skipping bounds calculation`);
+        // Calculate bounds from ALL nodes (shared nodes now have virtual copies with positions)
+        // Create nodes with positions for bounds calculation
+        const nodesWithPositions = allGroupNodes.map((node: any) => {
+            const isShared = getNodeWorkflowCount(node.id, workflowGroups) > 1;
+            if (isShared) {
+                const virtualId = getVirtualNodeId(node.id, group.id);
+                const pos = originalPositions.get(virtualId);
+                return pos ? { ...node, x: pos.x, y: pos.y } : null;
+            } else {
+                return node;
+            }
+        }).filter((n: any) => n && typeof n.x === 'number' && typeof n.y === 'number');
+
+        if (nodesWithPositions.length === 0) {
+            console.warn(`Workflow "${group.name}" has no nodes with positions, skipping bounds calculation`);
             return;
         }
 
-        const boundsResult = calculateGroupBounds(exclusiveGroupNodes);
+        const boundsResult = calculateGroupBounds(nodesWithPositions);
         if (!boundsResult) return;
 
         group.bounds = boundsResult.bounds;
@@ -110,4 +131,44 @@ export function layoutWorkflows(defs: any): void {
     });
 
     state.setOriginalPositions(originalPositions);
+
+    // Create expanded nodes (shared nodes become virtual copies per workflow)
+    // This must happen BEFORE renderEdges() so edges can find node positions
+    const expandedNodes: any[] = [];
+    const sharedNodeCopies = new Map<string, string[]>();
+
+    currentGraphData.nodes.forEach((node: any) => {
+        const nodeWorkflows = workflowGroups.filter((g: any) =>
+            g.nodes.includes(node.id) && g.nodes.length >= 3
+        );
+
+        if (nodeWorkflows.length > 1) {
+            // Shared node: create a copy for each workflow
+            nodeWorkflows.forEach((wf: any) => {
+                const virtualId = getVirtualNodeId(node.id, wf.id);
+                const pos = originalPositions.get(virtualId) || { x: 0, y: 0 };
+                expandedNodes.push({
+                    ...node,
+                    id: virtualId,
+                    _originalId: node.id,
+                    _workflowId: wf.id,
+                    x: pos.x,
+                    y: pos.y,
+                    fx: pos.x,
+                    fy: pos.y
+                });
+                if (!sharedNodeCopies.has(node.id)) {
+                    sharedNodeCopies.set(node.id, []);
+                }
+                sharedNodeCopies.get(node.id)!.push(virtualId);
+            });
+        } else if (nodeWorkflows.length === 1) {
+            // Non-shared node: use original (position already set on node object)
+            expandedNodes.push(node);
+        }
+        // Nodes in no valid workflow (< 3 nodes) are skipped
+    });
+
+    state.setExpandedNodes(expandedNodes);
+    state.setSharedNodeCopies(sharedNodeCopies);
 }

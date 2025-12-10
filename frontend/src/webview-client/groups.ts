@@ -202,7 +202,8 @@ export function renderCollapsedGroups(updateGroupVisibility: () => void): void {
     contentDiv.append('xhtml:div')
         .attr('class', 'collapsed-title')
         .style('text-align', 'center')
-        .style('color', 'var(--vscode-editor-foreground)')
+        .style('color', '#ffffff')
+        .style('text-shadow', '0 1px 3px rgba(0,0,0,0.6)')
         .style('font-family', '"Inter", "Segoe UI", "SF Pro Display", -apple-system, sans-serif')
         .style('font-size', '21px')
         .style('font-weight', '600')
@@ -213,13 +214,14 @@ export function renderCollapsedGroups(updateGroupVisibility: () => void): void {
     // Stats line
     contentDiv.append('xhtml:div')
         .attr('class', 'collapsed-stats')
-        .style('color', 'var(--vscode-editor-foreground)')
+        .style('color', '#ffffff')
+        .style('text-shadow', '0 1px 2px rgba(0,0,0,0.5)')
         .style('opacity', '0.9')
         .style('font-family', '"Inter", "Segoe UI", "SF Pro Display", -apple-system, sans-serif')
         .style('font-size', '15px')
         .style('font-weight', '600')
         .style('text-align', 'center')
-        .text((d: any) => `${d.nodes.length} nodes • ${d.llmProvider}`);
+        .text((d: any) => `${d.nodes.length} nodes • ${d.llmProviders}`);
 
     // Expand hint (centered below stats)
     contentDiv.append('xhtml:div')
@@ -228,7 +230,8 @@ export function renderCollapsedGroups(updateGroupVisibility: () => void): void {
         .style('align-items', 'center')
         .style('justify-content', 'center')
         .style('gap', '6px')
-        .style('color', 'var(--vscode-editor-foreground)')
+        .style('color', '#ffffff')
+        .style('text-shadow', '0 1px 2px rgba(0,0,0,0.4)')
         .style('opacity', '0.6')
         .style('font-family', '"Inter", "Segoe UI", "SF Pro Display", -apple-system, sans-serif')
         .style('font-size', '11px')

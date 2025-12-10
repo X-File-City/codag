@@ -25,6 +25,9 @@ export let minimapViewportRect: any = null;
 // UI state
 export let currentlyOpenNodeId: string | null = null;
 
+// Shared node copies: originalId -> [virtualIds]
+export let sharedNodeCopies: Map<string, string[]> = new Map();
+
 // D3 selections for various elements
 export let node: any = null;
 export let link: any = null;
@@ -33,6 +36,10 @@ export let linkGroup: any = null;
 export let collapsedGroups: any = null;
 export let groupElements: any = null;
 export let edgePathsContainer: any = null;
+export let sharedArrowsContainer: any = null;
+
+// Expanded nodes (including virtual copies with positions)
+export let expandedNodes: any[] = [];
 
 // Containers
 export let groupContainer: any = null;
@@ -129,4 +136,24 @@ export function setCurrentlyOpenNodeId(nodeId: string | null): void {
 // Get currently open node
 export function getCurrentlyOpenNodeId(): string | null {
     return currentlyOpenNodeId;
+}
+
+// Set shared node copies map
+export function setSharedNodeCopies(copies: Map<string, string[]>): void {
+    sharedNodeCopies = copies;
+}
+
+// Get shared node copies
+export function getSharedNodeCopies(): Map<string, string[]> {
+    return sharedNodeCopies;
+}
+
+// Set shared arrows container
+export function setSharedArrowsContainer(container: any): void {
+    sharedArrowsContainer = container;
+}
+
+// Set expanded nodes
+export function setExpandedNodes(nodes: any[]): void {
+    expandedNodes = nodes;
 }

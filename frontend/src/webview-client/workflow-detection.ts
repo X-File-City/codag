@@ -164,8 +164,8 @@ export function detectWorkflowGroups(data: WorkflowGraph): WorkflowGroup[] {
             });
 
             // Create a separate group for each connected component
-            const llmProvider = data.llms_detected && data.llms_detected.length > 0
-                ? data.llms_detected[0]
+            const llmProviders = data.llms_detected && data.llms_detected.length > 0
+                ? data.llms_detected.join(', ')
                 : 'LLM';
 
             if (connectedComponents.length > 1) {
@@ -203,7 +203,7 @@ export function detectWorkflowGroups(data: WorkflowGraph): WorkflowGroup[] {
                     name: groupName,
                     description: workflow.description,
                     nodes: componentNodes,
-                    llmProvider: llmProvider,
+                    llmProviders: llmProviders,
                     collapsed: false,
                     color: colorFromString(groupId),
                     level: 1
@@ -272,12 +272,12 @@ export function detectWorkflowGroups(data: WorkflowGraph): WorkflowGroup[] {
         const groupNodesList = Array.from(groupNodes);
 
         if (groupNodesList.length >= 3) {
-            const llmProvider = data.llms_detected && data.llms_detected.length > 0
-                ? data.llms_detected[0]
+            const llmProviders = data.llms_detected && data.llms_detected.length > 0
+                ? data.llms_detected.join(', ')
                 : 'LLM';
 
             const groupName = llmNodesInGroup.size > 1
-                ? `Workflow (${llmNodesInGroup.size} LLM calls)`
+                ? `Workflow (${llmNodesInGroup.size} LLM nodes)`
                 : (llmNode.label || `Workflow ${idx + 1}`);
 
             const groupId = `group_${idx}`;
@@ -285,7 +285,7 @@ export function detectWorkflowGroups(data: WorkflowGraph): WorkflowGroup[] {
                 id: groupId,
                 name: groupName,
                 nodes: groupNodesList,
-                llmProvider: llmProvider,
+                llmProviders: llmProviders,
                 collapsed: false,
                 color: colorFromString(groupId),
                 level: 1
