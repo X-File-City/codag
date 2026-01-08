@@ -206,9 +206,8 @@ SOURCE LOCATION (CRITICAL - MUST FOLLOW):
 DETECT LLM PROVIDERS (ONLY include if ACTUALLY FOUND in code):
 - "OpenAI" for: openai, .chat.completions.create
 - "Anthropic" for: anthropic, .messages.create
-- "Google Gemini" for: google.generativeai, .generate_content
-- "Grok" for: api.x.ai, xai, grok (prefer "Grok" over "xAI" in labels)
-- "Groq" for: groq (note: different from Grok)
+- "Google Gemini" for: google.generativeai, google.genai, genai.Client, .generate_content
+- "Grok" for: api.x.ai, xai, grok
 - "Ollama" for: ollama
 - "Cohere" for: cohere
 - "Hugging Face" for: huggingface, transformers

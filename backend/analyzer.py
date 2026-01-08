@@ -16,18 +16,14 @@ class StaticAnalyzer:
         r"Anthropic\s*\(",
         r"import\s+.*from\s+['\"]@anthropic-ai/sdk['\"]",
 
-        # Google Gemini
+        # Google Gemini (old and new SDKs)
         r"import\s+google\.generativeai",
+        r"from\s+google\s+import\s+genai",
         r"genai\.configure",
+        r"genai\.Client",
         r"genai\.GenerativeModel",
         r"from\s+['\"]@google/generative-ai['\"]",
         r"GoogleGenerativeAI",
-
-        # Groq
-        r"from\s+groq\s+import",
-        r"import\s+groq",
-        r"Groq\s*\(",
-        r"import\s+.*from\s+['\"]groq-sdk['\"]",
 
         # Ollama
         r"from\s+ollama\s+import",
@@ -122,10 +118,8 @@ class StaticAnalyzer:
             return "openai"
         if re.search(r"from\s+anthropic\s+import|import\s+anthropic|Anthropic\s*\(", code):
             return "anthropic"
-        if re.search(r"import\s+google\.generativeai|genai\.|GoogleGenerativeAI", code):
+        if re.search(r"import\s+google\.generativeai|from\s+google\s+import\s+genai|genai\.Client|GoogleGenerativeAI", code):
             return "gemini"
-        if re.search(r"from\s+groq\s+import|import\s+groq|Groq\s*\(", code):
-            return "groq"
         if re.search(r"from\s+ollama\s+import|import\s+ollama", code):
             return "ollama"
 
