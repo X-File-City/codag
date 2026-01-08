@@ -54,28 +54,26 @@ export class AuthManager {
             console.log('[auth] initialize: Setting token on API client');
             this.api.setToken(token);
 
-            // Fetch user if not in cache
-            let user = cachedState?.user;
-            if (!user) {
-                console.log('[auth] initialize: No cached user, fetching from API');
-                try {
-                    user = await this.api.getUser();
-                } catch (error: any) {
-                    // Clear token on auth errors (401/403) and user not found (404)
-                    const status = error.response?.status;
-                    if (status === 401 || status === 403 || status === 404) {
-                        console.log(`[auth] initialize: Token invalid (${status}), clearing`);
-                        await this.clearToken();
-                        return;
-                    }
-                    // For other errors (network, 500), keep token and use cached state
-                    console.log('[auth] initialize: API error but keeping token:', error.message);
-                    if (cachedState) {
-                        this.authState = cachedState;
-                        return;
-                    }
+            // Always validate token on startup by fetching user
+            console.log('[auth] initialize: Validating token by fetching user');
+            let user;
+            try {
+                user = await this.api.getUser();
+            } catch (error: any) {
+                // Clear token on auth errors (401/403) and user not found (404)
+                const status = error.response?.status;
+                if (status === 401 || status === 403 || status === 404) {
+                    console.log(`[auth] initialize: Token invalid (${status}), clearing`);
+                    await this.clearToken();
                     return;
                 }
+                // For other errors (network, 500), keep token and use cached state
+                console.log('[auth] initialize: API error but keeping token:', error.message);
+                if (cachedState) {
+                    this.authState = cachedState;
+                    return;
+                }
+                return;
             }
 
             this.authState = {
