@@ -4,7 +4,7 @@ import { computeGraphDiff, hasDiff } from './graph-diff';
 import { detectWorkflowGroups, updateSnapshotStats, ensureVisualCues } from './workflow-detection';
 import { openPanel } from './panel';
 import { layoutWorkflows } from './layout';
-import { renderGroups, renderCollapsedGroups } from './groups';
+import { renderGroups } from './groups';
 import { renderEdges } from './edges';
 import { renderNodes, pulseNodes } from './nodes';
 import { dragstarted, dragged, dragended } from './drag';
@@ -115,9 +115,6 @@ export function setupMessageHandler(): void {
                 if (message.preserveState && message.graph) {
                     console.log('[webview] updateGraph: applying update');
 
-                    // Capture zoom transform
-                    const zoomTransform = d3.zoomTransform(svg.node());
-
                     // Compute diff for toast message
                     const diff = computeGraphDiff(state.currentGraphData, message.graph);
 
@@ -148,8 +145,27 @@ export function setupMessageHandler(): void {
                         state.workflowGroups.filter((g: any) => g.collapsed).map((g: any) => g.id)
                     );
 
+                    // Save existing node positions BEFORE updating graph data
+                    const savedPositions = new Map<string, { x: number; y: number }>();
+                    state.currentGraphData.nodes.forEach((node: any) => {
+                        if (typeof node.x === 'number' && typeof node.y === 'number') {
+                            savedPositions.set(node.id, { x: node.x, y: node.y });
+                        }
+                    });
+
                     // Ensure visual cues on new data
                     ensureVisualCues(message.graph);
+
+                    // Restore positions for existing nodes in new graph
+                    message.graph.nodes.forEach((node: any) => {
+                        const savedPos = savedPositions.get(node.id);
+                        if (savedPos) {
+                            node.x = savedPos.x;
+                            node.y = savedPos.y;
+                            node.fx = savedPos.x;
+                            node.fy = savedPos.y;
+                        }
+                    });
 
                     // Update graph data
                     state.setGraphData(message.graph);
@@ -172,17 +188,104 @@ export function setupMessageHandler(): void {
                     // Get defs from svg
                     const defs = svg.select('defs');
 
-                    // Re-run layout
+                    // Only run full layout if there are new nodes without positions
+                    const hasUnpositionedNodes = message.graph.nodes.some((n: any) =>
+                        typeof n.x !== 'number' || typeof n.y !== 'number'
+                    );
+
+                    if (hasUnpositionedNodes) {
+                        // Place new nodes near their connected neighbors
+                        const newNodes = diff.nodes.added;
+                        newNodes.forEach((newNode: any) => {
+                            if (typeof newNode.x === 'number' && typeof newNode.y === 'number') return;
+
+                            // Find connected edges
+                            const connectedEdges = message.graph.edges.filter((e: any) =>
+                                e.source === newNode.id || e.target === newNode.id
+                            );
+
+                            // Find neighbor positions
+                            const neighborPositions: { x: number; y: number }[] = [];
+                            connectedEdges.forEach((edge: any) => {
+                                const neighborId = edge.source === newNode.id ? edge.target : edge.source;
+                                const neighbor = message.graph.nodes.find((n: any) => n.id === neighborId);
+                                if (neighbor && typeof neighbor.x === 'number' && typeof neighbor.y === 'number') {
+                                    neighborPositions.push({ x: neighbor.x, y: neighbor.y });
+                                }
+                            });
+
+                            if (neighborPositions.length > 0) {
+                                // Place near average of neighbors with offset
+                                const avgX = neighborPositions.reduce((sum, p) => sum + p.x, 0) / neighborPositions.length;
+                                const avgY = neighborPositions.reduce((sum, p) => sum + p.y, 0) / neighborPositions.length;
+                                newNode.x = avgX + 100; // Offset to the right
+                                newNode.y = avgY + 50; // Slight offset down
+                                newNode.fx = newNode.x;
+                                newNode.fy = newNode.y;
+                            } else {
+                                // No neighbors, place at origin with offset based on existing nodes
+                                const existingNodes = message.graph.nodes.filter((n: any) =>
+                                    typeof n.x === 'number' && typeof n.y === 'number'
+                                );
+                                if (existingNodes.length > 0) {
+                                    const maxX = Math.max(...existingNodes.map((n: any) => n.x));
+                                    const minY = Math.min(...existingNodes.map((n: any) => n.y));
+                                    newNode.x = maxX + 150;
+                                    newNode.y = minY;
+                                } else {
+                                    newNode.x = 0;
+                                    newNode.y = 0;
+                                }
+                                newNode.fx = newNode.x;
+                                newNode.fy = newNode.y;
+                            }
+
+                            // Update in graph data
+                            const nodeInGraph = message.graph.nodes.find((n: any) => n.id === newNode.id);
+                            if (nodeInGraph) {
+                                nodeInGraph.x = newNode.x;
+                                nodeInGraph.y = newNode.y;
+                                nodeInGraph.fx = newNode.fx;
+                                nodeInGraph.fy = newNode.fy;
+                            }
+                        });
+                    }
+
+                    // Re-run layout only for workflow patterns (creates patterns, calculates bounds)
                     layoutWorkflows(defs);
 
+                    // Restore saved positions AFTER layout to override dagre positions
+                    state.currentGraphData.nodes.forEach((node: any) => {
+                        const savedPos = savedPositions.get(node.id);
+                        if (savedPos) {
+                            node.x = savedPos.x;
+                            node.y = savedPos.y;
+                            node.fx = savedPos.x;
+                            node.fy = savedPos.y;
+                        }
+                    });
+
+                    // Also restore positions for expandedNodes (used by renderNodes)
+                    state.expandedNodes.forEach((node: any) => {
+                        const nodeId = node._originalId || node.id;
+                        const savedPos = savedPositions.get(nodeId);
+                        if (savedPos) {
+                            node.x = savedPos.x;
+                            node.y = savedPos.y;
+                            node.fx = savedPos.x;
+                            node.fy = savedPos.y;
+                        }
+                    });
+
+                    // Also update originalPositions for existing nodes
+                    savedPositions.forEach((pos, nodeId) => {
+                        state.originalPositions.set(nodeId, pos);
+                    });
+
                     // Re-render everything
-                    renderGroups(updateGroupVisibility);
+                    renderGroups();
                     renderEdges();
                     renderNodes(dragstarted, dragged, dragended);
-                    renderCollapsedGroups(updateGroupVisibility);
-
-                    // Restore zoom transform
-                    svg.call(zoom.transform, zoomTransform);
 
                     // Re-render minimap
                     renderMinimap();
@@ -329,10 +432,9 @@ export function setupMessageHandler(): void {
                     layoutWorkflows(defs);
 
                     // Render everything
-                    renderGroups(updateGroupVisibility);
+                    renderGroups();
                     renderEdges();
                     renderNodes(dragstarted, dragged, dragended);
-                    renderCollapsedGroups(updateGroupVisibility);
 
                     // Render minimap
                     renderMinimap();

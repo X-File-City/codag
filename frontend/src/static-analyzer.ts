@@ -24,7 +24,10 @@ const LLM_PATTERNS = [
     /openai/i, /anthropic/i, /gemini/i, /genai/i,
     /ollama/i, /cohere/i, /gpt/i, /claude/i,
     /llm/i, /model/i, /client/i, /chat/i, /completion/i,
-    /GenerativeModel/i, /xai/i, /grok/i
+    /GenerativeModel/i, /xai/i, /grok/i,
+    /mistral/i, /together/i, /replicate/i, /fireworks/i,
+    /bedrock/i, /vertexai/i, /ai21/i, /deepseek/i,
+    /llama_index/i, /autogen/i, /haystack/i, /instructor/i
 ];
 
 export class StaticAnalyzer {

@@ -117,6 +117,12 @@ Each node includes `source: {file, line, function}` for code navigation.
 - Cause: Labels not checking if endpoints are in same collapsed group
 - Solution: Hide labels when both source/target in same collapsed group (`webview.ts` lines 1330-1356)
 
+**Elements don't render initially but appear after interaction:**
+- Cause: Usually `formatGraph()` in `controls.ts` - it runs after initial render and uses transitions to update elements
+- The `getNode()` helper in `formatGraph` must handle ALL node types (regular nodes, virtual shared nodes, component placeholders `__comp_*`)
+- If `getNode()` returns null, `generateEdgePath()` returns empty string, overwriting valid paths
+- **Key insight**: When adding new node types or placeholders, update `getNode()` in BOTH `edges.ts` (findNode) AND `controls.ts` (formatGraph)
+
 ## Visualization
 
 - **Layout**: Dagre hierarchical (left-to-right, rank direction LR)

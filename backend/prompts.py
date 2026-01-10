@@ -211,6 +211,16 @@ DETECT LLM PROVIDERS (ONLY include if ACTUALLY FOUND in code):
 - "Ollama" for: ollama
 - "Cohere" for: cohere
 - "Hugging Face" for: huggingface, transformers
+- "Mistral" for: mistralai, MistralClient
+- "Together" for: together, Together()
+- "Replicate" for: replicate, replicate.run
+- "Fireworks" for: fireworks, fireworks.client
+- "Bedrock" for: bedrock-runtime, InvokeModel, BedrockRuntimeClient
+- "Azure OpenAI" for: AzureOpenAI, azure.ai.openai
+- "Vertex AI" for: google.cloud.aiplatform, vertexai
+- "AI21" for: ai21, AI21Client
+- "DeepSeek" for: api.deepseek.com (uses OpenAI SDK)
+- "OpenRouter" for: openrouter.ai (uses OpenAI SDK)
 IMPORTANT: "llms_detected" array must ONLY contain providers with actual imports/calls in the code. Empty array [] if none found.
 
 DETECT AI SERVICE PROVIDERS (Non-LLM) - ONLY include if ACTUALLY FOUND in code:

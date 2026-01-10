@@ -3,9 +3,9 @@ import './types';
 import * as state from './state';
 import { setupSVG } from './setup';
 import { layoutWorkflows } from './layout';
-import { renderGroups, renderCollapsedGroups } from './groups';
+import { renderGroups } from './groups';
 import { renderCollapsedComponents } from './components';
-import { renderEdges } from './edges';
+import { renderEdges, updateEdgePaths } from './edges';
 import { renderNodes } from './nodes';
 import { dragstarted, dragged, dragended } from './drag';
 import { setupControls, fitToScreen, formatGraph } from './controls';
@@ -51,7 +51,7 @@ declare function acquireVsCodeApi(): any;
     layoutWorkflows(defs);
 
     // Render groups (before edges/nodes for z-index)
-    renderGroups(updateGroupVisibility);
+    renderGroups();
 
     // Render edges
     renderEdges();
@@ -59,14 +59,11 @@ declare function acquireVsCodeApi(): any;
     // Render nodes
     renderNodes(dragstarted, dragged, dragended);
 
-    // Render collapsed groups (after edges/nodes for z-index)
-    renderCollapsedGroups(updateGroupVisibility);
-
     // Render collapsed components (within workflows)
     renderCollapsedComponents(updateComponentVisibility);
 
-    // Setup controls (zoom, expand/collapse, format, refresh)
-    setupControls(updateGroupVisibility);
+    // Setup controls (zoom, format, refresh)
+    setupControls();
     setupClosePanel();
     setupDirectory();
 
@@ -117,7 +114,15 @@ declare function acquireVsCodeApi(): any;
         updateGroupVisibility();
         // Update header stats
         updateSnapshotStats(state.workflowGroups, state.currentGraphData);
-    }, 100);
+
+        // Force edge paths update (component edges need this)
+        updateEdgePaths();
+
+        // Double-update after frame to catch any late renders
+        requestAnimationFrame(() => {
+            updateEdgePaths();
+        });
+    }, 50);
 
     // Re-render minimap on window resize (debounced)
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;

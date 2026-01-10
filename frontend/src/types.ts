@@ -25,11 +25,19 @@ export interface WorkflowEdge {
     label?: string;
 }
 
+export interface ComponentMetadata {
+    id: string;
+    name: string;
+    description?: string;
+    nodeIds: string[];
+}
+
 export interface WorkflowMetadata {
     id: string;
     name: string;
     description: string;
     nodeIds: string[];
+    components?: ComponentMetadata[];
 }
 
 export interface WorkflowGraph {

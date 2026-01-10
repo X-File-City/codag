@@ -4,8 +4,7 @@ import { generateEdgePath, getNodeOrCollapsedGroup, getVirtualNodeId, getNodeWor
 import {
     NODE_WIDTH, NODE_HEIGHT,
     EDGE_STROKE_WIDTH, EDGE_HOVER_STROKE_WIDTH, EDGE_HOVER_HIT_WIDTH,
-    EDGE_COLOR_HOVER,
-    COLLAPSED_COMPONENT_WIDTH, COLLAPSED_COMPONENT_HEIGHT
+    EDGE_COLOR_HOVER
 } from './constants';
 import { getWorkflowNodeIds, getNodeDimensions, findReverseEdge, getBidirectionalEdgeKey, positionTooltipNearMouse } from './helpers';
 import { WorkflowComponent, WorkflowGroup } from './types';
@@ -35,6 +34,18 @@ function findNodeCollapsedComponent(
  */
 function getComponentPlaceholderId(componentId: string): string {
     return `__comp_${componentId}`;
+}
+
+/**
+ * Get text-based component dimensions (matches components.ts rendering)
+ */
+function getComponentVisualDimensions(comp: WorkflowComponent): { width: number; height: number } {
+    const nameLength = (comp.name || '').length;
+    const countText = `${comp.nodes.length} nodes`;
+    const maxTextLength = Math.max(nameLength, countText.length);
+    const width = Math.max(100, maxTextLength * 10 + 40);
+    const height = 60;
+    return { width, height };
 }
 
 // Get expanded nodes from state (created by layoutWorkflows)
@@ -204,26 +215,40 @@ export function renderEdges(): void {
             }
         });
 
-    // Helper to find node by ID (check component placeholders, expanded nodes, then original)
+    // Helper to find node by ID (check component placeholders, nodes in collapsed components, expanded nodes, then original)
     const findNode = (nodeId: string) => {
         // Check if this is a component placeholder
         if (nodeId.startsWith('__comp_')) {
             const compId = nodeId.replace('__comp_', '');
-            // Find the component in workflow groups
             for (const group of workflowGroups) {
                 for (const comp of (group.components || [])) {
                     if (comp.id === compId && comp.centerX !== undefined && comp.centerY !== undefined) {
+                        const dims = getComponentVisualDimensions(comp);
                         return {
                             id: nodeId,
                             x: comp.centerX,
                             y: comp.centerY,
                             _isComponentPlaceholder: true,
-                            _componentWidth: COLLAPSED_COMPONENT_WIDTH,
-                            _componentHeight: COLLAPSED_COMPONENT_HEIGHT
+                            _componentWidth: dims.width,
+                            _componentHeight: dims.height
                         };
                     }
                 }
             }
+        }
+
+        // Check if node is inside a collapsed component - use component's center position
+        const collapsedComp = findNodeCollapsedComponent(nodeId, workflowGroups, expandedComponents);
+        if (collapsedComp && collapsedComp.centerX !== undefined && collapsedComp.centerY !== undefined) {
+            const dims = getComponentVisualDimensions(collapsedComp);
+            return {
+                id: nodeId,
+                x: collapsedComp.centerX,
+                y: collapsedComp.centerY,
+                _isInsideComponent: true,
+                _componentWidth: dims.width,
+                _componentHeight: dims.height
+            };
         }
 
         // Check expanded nodes (includes virtual copies)
@@ -242,7 +267,6 @@ export function renderEdges(): void {
             if (baseNode && typeof baseNode.x === 'number' && !isNaN(baseNode.x)) return baseNode;
         }
 
-        console.warn(`[edges] Node not found: ${nodeId}`);
         return null;
     };
 
@@ -251,11 +275,10 @@ export function renderEdges(): void {
         const sourceNode = findNode(d.source);
         const targetNode = findNode(d.target);
         if (!sourceNode || !targetNode) return '';
-        // Use component dimensions if applicable
-        const sourceWidth = sourceNode._componentWidth || NODE_WIDTH;
-        const sourceHeight = sourceNode._componentHeight || NODE_HEIGHT;
-        const targetWidth = targetNode._componentWidth || NODE_WIDTH;
-        const targetHeight = targetNode._componentHeight || NODE_HEIGHT;
+        const sourceWidth = sourceNode._componentWidth || sourceNode.width || NODE_WIDTH;
+        const sourceHeight = sourceNode._componentHeight || sourceNode.height || NODE_HEIGHT;
+        const targetWidth = targetNode._componentWidth || targetNode.width || NODE_WIDTH;
+        const targetHeight = targetNode._componentHeight || targetNode.height || NODE_HEIGHT;
         return generateEdgePath(d, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight, sourceWidth, sourceHeight, allEdges);
     });
 
@@ -263,10 +286,10 @@ export function renderEdges(): void {
         const sourceNode = findNode(d.source);
         const targetNode = findNode(d.target);
         if (!sourceNode || !targetNode) return '';
-        const sourceWidth = sourceNode._componentWidth || NODE_WIDTH;
-        const sourceHeight = sourceNode._componentHeight || NODE_HEIGHT;
-        const targetWidth = targetNode._componentWidth || NODE_WIDTH;
-        const targetHeight = targetNode._componentHeight || NODE_HEIGHT;
+        const sourceWidth = sourceNode._componentWidth || sourceNode.width || NODE_WIDTH;
+        const sourceHeight = sourceNode._componentHeight || sourceNode.height || NODE_HEIGHT;
+        const targetWidth = targetNode._componentWidth || targetNode.width || NODE_WIDTH;
+        const targetHeight = targetNode._componentHeight || targetNode.height || NODE_HEIGHT;
         return generateEdgePath(d, sourceNode, targetNode, workflowGroups, targetWidth, targetHeight, sourceWidth, sourceHeight, allEdges);
     });
 
@@ -343,13 +366,14 @@ export function updateEdgePaths(): void {
             for (const group of workflowGroups) {
                 for (const comp of (group.components || [])) {
                     if (comp.id === compId && comp.centerX !== undefined && comp.centerY !== undefined) {
+                        const dims = getComponentVisualDimensions(comp);
                         return {
                             id: nodeId,
                             x: comp.centerX,
                             y: comp.centerY,
                             _isComponentPlaceholder: true,
-                            _componentWidth: COLLAPSED_COMPONENT_WIDTH,
-                            _componentHeight: COLLAPSED_COMPONENT_HEIGHT
+                            _componentWidth: dims.width,
+                            _componentHeight: dims.height
                         };
                     }
                 }

@@ -15,39 +15,39 @@ export function setupSVG(): { svg: any; g: any; zoom: any; defs: any } {
     // Create defs for patterns and markers
     const defs = svg.append('defs');
 
-    // Fine pegboard dot pattern - 5px grid for normal zoom
+    // Fine pegboard dot pattern - 20px grid for normal zoom
     const finePattern = defs.append('pattern')
         .attr('id', 'pegboard-fine')
-        .attr('x', 0)
-        .attr('y', 0)
-        .attr('width', 5)
-        .attr('height', 5)
-        .attr('patternUnits', 'userSpaceOnUse');
-
-    finePattern.append('circle')
-        .attr('id', 'pegboard-fine-dot')
-        .attr('cx', 2.5)
-        .attr('cy', 2.5)
-        .attr('r', 0.5)
-        .attr('fill', 'var(--vscode-editor-foreground)')
-        .attr('opacity', 0.15);
-
-    // Coarse pegboard dot pattern - 20px grid for zoomed out view
-    const coarsePattern = defs.append('pattern')
-        .attr('id', 'pegboard-coarse')
         .attr('x', 0)
         .attr('y', 0)
         .attr('width', 20)
         .attr('height', 20)
         .attr('patternUnits', 'userSpaceOnUse');
 
-    coarsePattern.append('circle')
-        .attr('id', 'pegboard-coarse-dot')
+    finePattern.append('circle')
+        .attr('id', 'pegboard-fine-dot')
         .attr('cx', 10)
         .attr('cy', 10)
-        .attr('r', 1)
+        .attr('r', 1.5)
         .attr('fill', 'var(--vscode-editor-foreground)')
-        .attr('opacity', 0.15);
+        .attr('opacity', 0.25);
+
+    // Coarse pegboard dot pattern - 40px grid for zoomed out view
+    const coarsePattern = defs.append('pattern')
+        .attr('id', 'pegboard-coarse')
+        .attr('x', 0)
+        .attr('y', 0)
+        .attr('width', 40)
+        .attr('height', 40)
+        .attr('patternUnits', 'userSpaceOnUse');
+
+    coarsePattern.append('circle')
+        .attr('id', 'pegboard-coarse-dot')
+        .attr('cx', 20)
+        .attr('cy', 20)
+        .attr('r', 2)
+        .attr('fill', 'var(--vscode-editor-foreground)')
+        .attr('opacity', 0.25);
 
     // Main group for all graph elements (zoomable, includes pegboard)
     const g = svg.append('g');
@@ -84,7 +84,7 @@ export function setupSVG(): { svg: any; g: any; zoom: any; defs: any } {
 
             if (newZone !== lastZoomZone) {
                 lastZoomZone = newZone;
-                const opacity = Math.min(0.15, Math.max(0.02, 0.15 * k));
+                const opacity = Math.min(0.25, Math.max(0.05, 0.25 * k));
 
                 if (newZone === 'coarse') {
                     pegboardBg.attr('fill', 'url(#pegboard-coarse)');
@@ -98,15 +98,15 @@ export function setupSVG(): { svg: any; g: any; zoom: any; defs: any } {
 
     svg.call(zoom).on('dblclick.zoom', null);
 
-    // Arrow markers (30% smaller)
+    // Arrow markers - path shortened so arrow tip reaches node edge
     defs.append('marker')
         .attr('id', 'arrowhead')
         .attr('viewBox', '-0 -5 10 10')
         .attr('refX', 0)
         .attr('refY', 0)
         .attr('orient', 'auto')
-        .attr('markerWidth', 2.8)
-        .attr('markerHeight', 2.8)
+        .attr('markerWidth', 2.25)
+        .attr('markerHeight', 2.25)
         .append('path')
         .attr('d', 'M 0,-5 L 10,0 L 0,5')
         .attr('fill', 'currentColor')
@@ -119,8 +119,8 @@ export function setupSVG(): { svg: any; g: any; zoom: any; defs: any } {
         .attr('refX', 0)
         .attr('refY', 0)
         .attr('orient', 'auto')
-        .attr('markerWidth', 2.8)
-        .attr('markerHeight', 2.8)
+        .attr('markerWidth', 2.25)
+        .attr('markerHeight', 2.25)
         .append('path')
         .attr('d', 'M 0,-5 L -10,0 L 0,5')
         .attr('fill', 'currentColor')

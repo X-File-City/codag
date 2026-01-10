@@ -9,36 +9,104 @@ import {
     GROUP_BOUNDS_PADDING_TOP,
     GROUP_BOUNDS_PADDING_BOTTOM
 } from './constants';
+import { measureTextWidth } from './groups';
+
+declare const d3: any;
+
+/**
+ * Measure node dimensions based on label text with wrapping
+ * Returns width and height that fits the text content
+ */
+export function measureNodeDimensions(label: string): { width: number; height: number } {
+    const fontFamily = '"DM Sans", "Inter", "Segoe UI", -apple-system, sans-serif';
+    const fontSize = 15;
+    const lineHeight = 20;  // Increased for better spacing
+    const horizontalPadding = 16;  // 8px on each side (matches foreignObject x offset)
+    const minWidth = 80;
+    const maxWidth = 200;
+    const verticalPadding = 12;  // 6px on each side
+
+    const textWidth = measureTextWidth(label, `${fontSize}px`, '400', fontFamily);
+
+    // Available text space inside max-width node (foreignObject uses nodeWidth - 8)
+    // Add 10% safety buffer for SVG vs CSS measurement differences
+    const maxTextSpace = (maxWidth - 8) * 0.90;
+
+    // If text fits in one line within max width (with safety margin)
+    if (textWidth <= maxTextSpace) {
+        const width = Math.max(minWidth, textWidth + horizontalPadding);
+        const height = lineHeight + verticalPadding;
+        return { width, height };
+    }
+
+    // Calculate number of lines needed using actual available width
+    const words = label.split(' ');
+    let lines = 1;
+    let currentLineWidth = 0;
+
+    for (const word of words) {
+        const wordWidth = measureTextWidth(word, `${fontSize}px`, '400', fontFamily);
+        const spaceWidth = measureTextWidth(' ', `${fontSize}px`, '400', fontFamily);
+
+        // Check if word fits on current line (with space if not first word on line)
+        const neededWidth = currentLineWidth > 0 ? wordWidth + spaceWidth : wordWidth;
+
+        if (currentLineWidth + neededWidth > maxTextSpace && currentLineWidth > 0) {
+            lines++;
+            currentLineWidth = wordWidth;
+        } else {
+            currentLineWidth += neededWidth;
+        }
+    }
+
+    const height = (lines * lineHeight) + verticalPadding;
+    return { width: maxWidth, height };
+}
+
+/**
+ * Measure node width based on label text (legacy - use measureNodeDimensions)
+ */
+export function measureNodeWidth(label: string): number {
+    return measureNodeDimensions(label).width;
+}
 
 /**
  * Get node dimensions based on whether it's a collapsed group or regular node
  * Replaces 17+ occurrences of inline dimension calculation
  */
 export function getNodeDimensions(node: any): { width: number; height: number } {
-    return node?.isCollapsedGroup
-        ? { width: COLLAPSED_GROUP_WIDTH, height: COLLAPSED_GROUP_HEIGHT }
-        : { width: NODE_WIDTH, height: NODE_HEIGHT };
+    if (node?.isCollapsedGroup) {
+        return { width: COLLAPSED_GROUP_WIDTH, height: COLLAPSED_GROUP_HEIGHT };
+    }
+    // Use stored dynamic dimensions if available
+    return {
+        width: node?.width || NODE_WIDTH,
+        height: node?.height || NODE_HEIGHT
+    };
 }
 
 /**
  * Calculate group bounds from node positions
- * Replaces 4+ occurrences of bounds calculation
+ * Uses node CENTERS + max dimensions for consistent alignment across workflows
+ * This ensures bounding boxes align when dagre-aligned node centers are at the same position
  */
 export function calculateGroupBounds(nodes: any[]): {
     bounds: { minX: number; maxX: number; minY: number; maxY: number };
     centerX: number;
     centerY: number;
 } | null {
-    const xs = nodes.map((n: any) => n.x).filter((x: number) => x !== undefined && !isNaN(x));
-    const ys = nodes.map((n: any) => n.y).filter((y: number) => y !== undefined && !isNaN(y));
+    const validNodes = nodes.filter((n: any) =>
+        n.x !== undefined && !isNaN(n.x) && n.y !== undefined && !isNaN(n.y)
+    );
 
-    if (xs.length === 0 || ys.length === 0) return null;
+    if (validNodes.length === 0) return null;
 
+    // Calculate bounds using actual node edges (tight fit)
     const bounds = {
-        minX: Math.min(...xs) - GROUP_BOUNDS_PADDING_X,
-        maxX: Math.max(...xs) + GROUP_BOUNDS_PADDING_X,
-        minY: Math.min(...ys) - GROUP_BOUNDS_PADDING_TOP,
-        maxY: Math.max(...ys) + GROUP_BOUNDS_PADDING_BOTTOM
+        minX: Math.min(...validNodes.map((n: any) => n.x - (n.width || NODE_WIDTH) / 2)) - GROUP_BOUNDS_PADDING_X,
+        maxX: Math.max(...validNodes.map((n: any) => n.x + (n.width || NODE_WIDTH) / 2)) + GROUP_BOUNDS_PADDING_X,
+        minY: Math.min(...validNodes.map((n: any) => n.y - (n.height || NODE_HEIGHT) / 2)) - GROUP_BOUNDS_PADDING_TOP,
+        maxY: Math.max(...validNodes.map((n: any) => n.y + (n.height || NODE_HEIGHT) / 2)) + GROUP_BOUNDS_PADDING_BOTTOM
     };
 
     return {

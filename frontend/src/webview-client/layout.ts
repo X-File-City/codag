@@ -2,14 +2,13 @@
 import * as state from './state';
 import { snapToGrid, getNodeWorkflowCount, getVirtualNodeId } from './utils';
 import { createWorkflowPattern } from './setup';
-import { calculateGroupBounds } from './helpers';
-import { measureTextWidth } from './groups';
+import { measureNodeDimensions } from './helpers';
 import {
     NODE_WIDTH, NODE_HEIGHT,
     DAGRE_NODESEP, DAGRE_RANKSEP, DAGRE_MARGIN,
     WORKFLOW_SPACING,
-    GROUP_TITLE_OFFSET_X,
-    COLLAPSED_COMPONENT_WIDTH, COLLAPSED_COMPONENT_HEIGHT
+    GROUP_BOUNDS_PADDING_X, GROUP_BOUNDS_PADDING_TOP, GROUP_BOUNDS_PADDING_BOTTOM,
+    COMPONENT_PADDING
 } from './constants';
 import { WorkflowComponent } from './types';
 
@@ -32,13 +31,6 @@ function findCollapsedComponent(
     return null;
 }
 
-/**
- * Get component placeholder ID
- */
-function getComponentPlaceholderId(componentId: string): string {
-    return `__comp_${componentId}`;
-}
-
 // Temporary storage for workflow layout data during two-pass layout
 interface WorkflowLayoutData {
     group: any;
@@ -48,9 +40,9 @@ interface WorkflowLayoutData {
     height: number;
     offsetX: number;
     offsetY: number;
-    // Component-related data
-    nodeToComponentPlaceholder: Map<string, string>;
     components: WorkflowComponent[];
+    localBoundsMinX: number;
+    localBoundsMinY: number;
 }
 
 export function layoutWorkflows(defs: any): void {
@@ -60,6 +52,7 @@ export function layoutWorkflows(defs: any): void {
     const layoutData: WorkflowLayoutData[] = [];
 
     // ========== PASS 1: Layout each workflow individually with dagre ==========
+    // All nodes are laid out normally - components don't affect layout
     workflowGroups.forEach((group, idx) => {
         const allGroupNodes = currentGraphData.nodes.filter((n: any) =>
             group.nodes.includes(n.id)
@@ -72,7 +65,7 @@ export function layoutWorkflows(defs: any): void {
         // Create dagre graph for this workflow
         const dagreGraph = new dagre.graphlib.Graph();
         dagreGraph.setGraph({
-            rankdir: 'LR',
+            rankdir: 'TB',
             nodesep: DAGRE_NODESEP,
             ranksep: DAGRE_RANKSEP,
             marginx: DAGRE_MARGIN,
@@ -80,48 +73,19 @@ export function layoutWorkflows(defs: any): void {
         });
         dagreGraph.setDefaultEdgeLabel(() => ({}));
 
-        // Track which component placeholders have been added
-        const addedComponentPlaceholders = new Set<string>();
-        // Map node IDs to their component placeholder (if collapsed)
-        const nodeToComponentPlaceholder = new Map<string, string>();
-
-        // Add nodes: either regular nodes or component placeholders
+        // Add ALL nodes to dagre (components don't change layout)
         allGroupNodes.forEach((node: any) => {
-            const collapsedComp = findCollapsedComponent(node.id, components, expandedComponents);
-
-            if (collapsedComp) {
-                // Node is in a collapsed component
-                const placeholderId = getComponentPlaceholderId(collapsedComp.id);
-                nodeToComponentPlaceholder.set(node.id, placeholderId);
-
-                if (!addedComponentPlaceholders.has(collapsedComp.id)) {
-                    // Add placeholder node for this component
-                    dagreGraph.setNode(placeholderId, {
-                        width: COLLAPSED_COMPONENT_WIDTH,
-                        height: COLLAPSED_COMPONENT_HEIGHT
-                    });
-                    addedComponentPlaceholders.add(collapsedComp.id);
-                }
-            } else {
-                // Regular node (not in collapsed component)
-                dagreGraph.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
-            }
+            const dims = measureNodeDimensions(node.label || node.id);
+            node.width = dims.width;
+            node.height = dims.height;
+            dagreGraph.setNode(node.id, { width: dims.width, height: dims.height });
         });
 
-        // Add edges (transform to use component placeholders where needed)
+        // Add all edges
         currentGraphData.edges.forEach((edge: any) => {
             if (group.nodes.includes(edge.source) && group.nodes.includes(edge.target)) {
-                const sourceId = nodeToComponentPlaceholder.get(edge.source) || edge.source;
-                const targetId = nodeToComponentPlaceholder.get(edge.target) || edge.target;
-
-                // Skip internal edges within same collapsed component
-                if (sourceId === targetId && sourceId.startsWith('__comp_')) {
-                    return;
-                }
-
-                // Only add edge if not already added (dedup for component edges)
-                if (!dagreGraph.hasEdge(sourceId, targetId)) {
-                    dagreGraph.setEdge(sourceId, targetId);
+                if (!dagreGraph.hasEdge(edge.source, edge.target)) {
+                    dagreGraph.setEdge(edge.source, edge.target);
                 }
             }
         });
@@ -131,24 +95,8 @@ export function layoutWorkflows(defs: any): void {
         // Store LOCAL positions (no global offset yet)
         const localPositions = new Map<string, { x: number; y: number }>();
 
-        // First, store positions for component placeholders
-        addedComponentPlaceholders.forEach(compId => {
-            const placeholderId = getComponentPlaceholderId(compId);
-            const pos = dagreGraph.node(placeholderId);
-            if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
-                localPositions.set(placeholderId, { x: snapToGrid(pos.x), y: snapToGrid(pos.y) });
-            }
-        });
-
-        // Then store positions for regular nodes (not in collapsed components)
+        // Store positions for all nodes
         allGroupNodes.forEach((node: any) => {
-            const collapsedComp = findCollapsedComponent(node.id, components, expandedComponents);
-            if (collapsedComp) {
-                // Node is in collapsed component - position comes from placeholder
-                // We'll handle this when rendering
-                return;
-            }
-
             const pos = dagreGraph.node(node.id);
             if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
                 const isShared = getNodeWorkflowCount(node.id, workflowGroups) > 1;
@@ -157,28 +105,27 @@ export function layoutWorkflows(defs: any): void {
             }
         });
 
-        // Calculate local bounds
-        const positions = Array.from(localPositions.values());
-        if (positions.length === 0) return;
+        // Calculate local bounds using actual node edges
+        const positionEntries = Array.from(localPositions.entries());
+        if (positionEntries.length === 0) return;
 
-        const xs = positions.map(p => p.x);
-        const ys = positions.map(p => p.y);
+        // Build array with position + dimensions for each node
+        const nodesWithBounds = positionEntries.map(([key, pos]) => {
+            // Find node to get its dynamic dimensions
+            const nodeId = key.includes('__') ? key.split('__')[0] : key;
+            const node = allGroupNodes.find((n: any) => n.id === nodeId);
+            const width = node?.width || NODE_WIDTH;
+            const height = node?.height || NODE_HEIGHT;
+            return { x: pos.x, y: pos.y, width, height };
+        });
+
+        // Calculate bounds using actual node edges (tight fit)
         const localBounds = {
-            minX: Math.min(...xs) - 90,  // GROUP_BOUNDS_PADDING_X
-            maxX: Math.max(...xs) + 90,
-            minY: Math.min(...ys) - 126, // GROUP_BOUNDS_PADDING_TOP
-            maxY: Math.max(...ys) + 81   // GROUP_BOUNDS_PADDING_BOTTOM
+            minX: Math.min(...nodesWithBounds.map(n => n.x - n.width / 2)) - GROUP_BOUNDS_PADDING_X,
+            maxX: Math.max(...nodesWithBounds.map(n => n.x + n.width / 2)) + GROUP_BOUNDS_PADDING_X,
+            minY: Math.min(...nodesWithBounds.map(n => n.y - n.height / 2)) - GROUP_BOUNDS_PADDING_TOP,
+            maxY: Math.max(...nodesWithBounds.map(n => n.y + n.height / 2)) + GROUP_BOUNDS_PADDING_BOTTOM
         };
-
-        // Expand for title
-        const fontFamily = '"Inter", "Segoe UI", "SF Pro Display", -apple-system, sans-serif';
-        const titleText = `${group.name} (${group.nodes.length} nodes)`;
-        const titleWidth = measureTextWidth(titleText, '19px', '500', fontFamily);
-        const requiredWidth = titleWidth + GROUP_TITLE_OFFSET_X + 40;
-        const currentWidth = localBounds.maxX - localBounds.minX;
-        if (requiredWidth > currentWidth) {
-            localBounds.maxX = localBounds.minX + requiredWidth;
-        }
 
         const width = localBounds.maxX - localBounds.minX;
         const height = localBounds.maxY - localBounds.minY;
@@ -191,75 +138,161 @@ export function layoutWorkflows(defs: any): void {
             height,
             offsetX: 0,
             offsetY: 0,
-            nodeToComponentPlaceholder,
-            components
+            components,
+            localBoundsMinX: localBounds.minX,
+            localBoundsMinY: localBounds.minY
         });
     });
 
-    // ========== PASS 2: Grid tiling (row-based shelf packing for square-ish layout) ==========
+    // ========== PASS 2: Radial corner-packing layout ==========
     if (layoutData.length > 0) {
-        // Calculate target width for square-ish layout
-        const totalArea = layoutData.reduce((sum, d) => sum + d.width * d.height, 0);
-        const targetWidth = Math.sqrt(totalArea) * 1.2; // Slight bias for wider layout
+        const S = WORKFLOW_SPACING;
 
-        let currentX = 0;
-        let currentY = 0;
-        let rowMaxHeight = 0;
+        // Sort by area descending (largest first)
+        const sortedData = [...layoutData].sort((a, b) => (b.width * b.height) - (a.width * a.height));
 
-        layoutData.forEach((data, idx) => {
-            // Check if we need to start a new row
-            if (currentX > 0 && currentX + data.width > targetWidth) {
-                currentX = 0;
-                currentY += rowMaxHeight + WORKFLOW_SPACING;
-                rowMaxHeight = 0;
+        console.log('[layout] PASS 2: Radial corner-packing');
+        console.log('[layout] Sorted workflows by area:', sortedData.map(d => ({ name: d.group.name, w: d.width, h: d.height, area: d.width * d.height })));
+
+        // Placed workflows: { x, y, w, h } where x,y is top-left corner
+        const placed: { x: number; y: number; w: number; h: number; name: string }[] = [];
+
+        // Check if position overlaps any placed workflow (need S gap from all)
+        const overlaps = (x: number, y: number, w: number, h: number): boolean => {
+            for (const p of placed) {
+                const noOverlap =
+                    x + w + S <= p.x ||
+                    p.x + p.w + S <= x ||
+                    y + h + S <= p.y ||
+                    p.y + p.h + S <= y;
+                if (!noOverlap) return true;
+            }
+            return false;
+        };
+
+        // Distance from position center to origin
+        const distToCenter = (x: number, y: number, w: number, h: number): number => {
+            const cx = x + w / 2;
+            const cy = y + h / 2;
+            return Math.sqrt(cx * cx + cy * cy);
+        };
+
+        // Find corners: positions where new workflow is S away from TWO edges
+        // (one horizontal edge of workflow A, one vertical edge of workflow B)
+        const getCorners = (w: number, h: number): { x: number; y: number }[] => {
+            const corners: { x: number; y: number }[] = [];
+
+            for (const a of placed) {
+                for (const b of placed) {
+                    // Corner types: new workflow touches a's horizontal edge + b's vertical edge
+
+                    // Below a's bottom + right of b's right
+                    corners.push({ x: b.x + b.w + S, y: a.y + a.h + S });
+                    // Below a's bottom + left of b's left
+                    corners.push({ x: b.x - w - S, y: a.y + a.h + S });
+                    // Above a's top + right of b's right
+                    corners.push({ x: b.x + b.w + S, y: a.y - h - S });
+                    // Above a's top + left of b's left
+                    corners.push({ x: b.x - w - S, y: a.y - h - S });
+                }
             }
 
-            data.offsetX = currentX;
-            data.offsetY = currentY;
+            return corners;
+        };
 
-            currentX += data.width + WORKFLOW_SPACING;
-            rowMaxHeight = Math.max(rowMaxHeight, data.height);
+        // Place each workflow
+        sortedData.forEach((data, idx) => {
+            const w = data.width;
+            const h = data.height;
+
+            if (idx === 0) {
+                // Largest at center
+                data.offsetX = 0;
+                data.offsetY = 0;
+                placed.push({ x: 0, y: 0, w, h, name: data.group.name });
+                console.log(`[layout] Placed #0 "${data.group.name}" at (0, 0), size ${w}x${h}`);
+                return;
+            }
+
+            if (idx === 1) {
+                // Second to the RIGHT of first, top-aligned
+                const first = placed[0];
+                data.offsetX = first.x + first.w + S;
+                data.offsetY = first.y; // top-aligned
+                placed.push({ x: data.offsetX, y: data.offsetY, w, h, name: data.group.name });
+                console.log(`[layout] Placed #1 "${data.group.name}" at (${data.offsetX}, ${data.offsetY}), size ${w}x${h}`);
+                console.log(`[layout]   - first.x=${first.x}, first.w=${first.w}, S=${S}, first.y=${first.y}`);
+                return;
+            }
+
+            // Find all corners
+            const corners = getCorners(w, h);
+            console.log(`[layout] Finding position for #${idx} "${data.group.name}", size ${w}x${h}`);
+            console.log(`[layout]   - ${corners.length} corner candidates`);
+
+            // Find valid corner closest to center
+            let bestPos: { x: number; y: number } | null = null;
+            let bestDist = Infinity;
+
+            const validCorners: { x: number; y: number; dist: number }[] = [];
+            for (const pos of corners) {
+                if (!overlaps(pos.x, pos.y, w, h)) {
+                    const dist = distToCenter(pos.x, pos.y, w, h);
+                    validCorners.push({ ...pos, dist });
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestPos = pos;
+                    }
+                }
+            }
+
+            console.log(`[layout]   - ${validCorners.length} valid corners:`, validCorners.slice(0, 5));
+
+            if (bestPos) {
+                data.offsetX = bestPos.x;
+                data.offsetY = bestPos.y;
+                console.log(`[layout] Placed #${idx} "${data.group.name}" at (${bestPos.x}, ${bestPos.y}), dist=${bestDist.toFixed(1)}`);
+            } else {
+                // Fallback: place to the right of everything
+                const maxRight = Math.max(...placed.map(p => p.x + p.w));
+                data.offsetX = maxRight + S;
+                data.offsetY = 0;
+                console.log(`[layout] Placed #${idx} "${data.group.name}" at FALLBACK (${data.offsetX}, 0)`);
+            }
+
+            placed.push({ x: data.offsetX, y: data.offsetY, w, h, name: data.group.name });
         });
+
+        console.log('[layout] Final placed array:', placed);
+
+        // Normalize: shift so min is at (0, 0)
+        const minX = Math.min(...sortedData.map(d => d.offsetX));
+        const minY = Math.min(...sortedData.map(d => d.offsetY));
+        console.log(`[layout] Normalizing: minX=${minX}, minY=${minY}`);
+        sortedData.forEach((data) => {
+            data.offsetX -= minX;
+            data.offsetY -= minY;
+        });
+
+        console.log('[layout] After normalization:', sortedData.map(d => ({ name: d.group.name, offsetX: d.offsetX, offsetY: d.offsetY })));
     }
 
     // ========== PASS 3: Apply global offsets and finalize positions ==========
     layoutData.forEach((data) => {
-        const { group, nodes, localPositions, offsetX, offsetY, nodeToComponentPlaceholder, components } = data;
+        const { group, nodes, localPositions, offsetX, offsetY, components, localBoundsMinX, localBoundsMinY } = data;
 
-        // First, apply offsets to component placeholder positions and update component bounds
-        components.forEach((comp: WorkflowComponent) => {
-            const placeholderId = getComponentPlaceholderId(comp.id);
-            const localPos = localPositions.get(placeholderId);
-            if (localPos) {
-                const x = localPos.x + offsetX;
-                const y = localPos.y + offsetY;
-                comp.centerX = x;
-                comp.centerY = y;
-                comp.bounds = {
-                    minX: x - COLLAPSED_COMPONENT_WIDTH / 2,
-                    maxX: x + COLLAPSED_COMPONENT_WIDTH / 2,
-                    minY: y - COLLAPSED_COMPONENT_HEIGHT / 2,
-                    maxY: y + COLLAPSED_COMPONENT_HEIGHT / 2
-                };
-                // Store component placeholder position for edge routing
-                originalPositions.set(placeholderId, { x, y });
-            }
-        });
+        console.log(`[layout] PASS 3: "${group.name}" - offsetX=${offsetX.toFixed(1)}, offsetY=${offsetY.toFixed(1)}, localBoundsMin=(${localBoundsMinX.toFixed(1)}, ${localBoundsMinY.toFixed(1)}), PASS1 size=(${data.width.toFixed(1)}, ${data.height.toFixed(1)})`);
 
-        // Apply offset to all regular node positions (not in collapsed components)
+        // Apply offset to ALL node positions
+        // Normalize by subtracting localBounds origin so positions start at (0,0)
         nodes.forEach((node: any) => {
-            // Skip nodes in collapsed components
-            if (nodeToComponentPlaceholder.has(node.id)) {
-                return;
-            }
-
             const isShared = getNodeWorkflowCount(node.id, workflowGroups) > 1;
             const key = isShared ? getVirtualNodeId(node.id, group.id) : node.id;
             const localPos = localPositions.get(key);
 
             if (localPos) {
-                const x = localPos.x + offsetX;
-                const y = localPos.y + offsetY;
+                const x = localPos.x - localBoundsMinX + offsetX;
+                const y = localPos.y - localBoundsMinY + offsetY;
 
                 if (isShared) {
                     originalPositions.set(key, { x, y });
@@ -273,51 +306,48 @@ export function layoutWorkflows(defs: any): void {
             }
         });
 
-        // Calculate final bounds with offset (include both regular nodes and component placeholders)
-        const nodesWithPositions = nodes
-            .filter((node: any) => !nodeToComponentPlaceholder.has(node.id)) // Exclude nodes in collapsed components
-            .map((node: any) => {
+        // Calculate component bounds from their actual node positions
+        components.forEach((comp: WorkflowComponent) => {
+            const compNodes = nodes.filter((n: any) => comp.nodes.includes(n.id));
+            if (compNodes.length === 0) return;
+
+            // Get positions for component nodes
+            const nodePositions = compNodes.map((node: any) => {
                 const isShared = getNodeWorkflowCount(node.id, workflowGroups) > 1;
                 if (isShared) {
                     const virtualId = getVirtualNodeId(node.id, group.id);
                     const pos = originalPositions.get(virtualId);
-                    return pos ? { ...node, x: pos.x, y: pos.y } : null;
+                    return pos ? { x: pos.x, y: pos.y, w: node.width || NODE_WIDTH, h: node.height || NODE_HEIGHT } : null;
                 } else {
-                    return node;
+                    return { x: node.x, y: node.y, w: node.width || NODE_WIDTH, h: node.height || NODE_HEIGHT };
                 }
-            }).filter((n: any) => n && typeof n.x === 'number' && typeof n.y === 'number');
+            }).filter((p: any) => p !== null);
 
-        // Add component placeholders as pseudo-nodes for bounds calculation
-        components.forEach((comp: WorkflowComponent) => {
-            if (comp.centerX !== undefined && comp.centerY !== undefined) {
-                nodesWithPositions.push({
-                    id: getComponentPlaceholderId(comp.id),
-                    x: comp.centerX,
-                    y: comp.centerY,
-                    _isComponentPlaceholder: true
-                });
-            }
+            if (nodePositions.length === 0) return;
+
+            // Calculate bounds from node positions (with padding)
+            comp.bounds = {
+                minX: Math.min(...nodePositions.map((p: any) => p.x - p.w / 2)) - COMPONENT_PADDING,
+                maxX: Math.max(...nodePositions.map((p: any) => p.x + p.w / 2)) + COMPONENT_PADDING,
+                minY: Math.min(...nodePositions.map((p: any) => p.y - p.h / 2)) - COMPONENT_PADDING,
+                maxY: Math.max(...nodePositions.map((p: any) => p.y + p.h / 2)) + COMPONENT_PADDING
+            };
+            comp.centerX = (comp.bounds.minX + comp.bounds.maxX) / 2;
+            comp.centerY = (comp.bounds.minY + comp.bounds.maxY) / 2;
         });
 
-        if (nodesWithPositions.length === 0) return;
-
-        const boundsResult = calculateGroupBounds(nodesWithPositions);
-        if (!boundsResult) return;
-
-        group.bounds = boundsResult.bounds;
-
-        // Expand bounds to fit title if needed
-        const fontFamily = '"Inter", "Segoe UI", "SF Pro Display", -apple-system, sans-serif';
-        const titleText = `${group.name} (${group.nodes.length} nodes)`;
-        const titleWidth = measureTextWidth(titleText, '19px', '500', fontFamily);
-        const requiredWidth = titleWidth + GROUP_TITLE_OFFSET_X + 40;
-        const currentWidth = group.bounds.maxX - group.bounds.minX;
-        if (requiredWidth > currentWidth) {
-            group.bounds.maxX = group.bounds.minX + requiredWidth;
-        }
-
+        // Use the exact bounds we calculated in PASS 1 and positioned in PASS 2
+        // No recalculation - just apply the offset to get final bounds
+        group.bounds = {
+            minX: offsetX,
+            maxX: offsetX + data.width,
+            minY: offsetY,
+            maxY: offsetY + data.height
+        };
         group.centerX = (group.bounds.minX + group.bounds.maxX) / 2;
         group.centerY = (group.bounds.minY + group.bounds.maxY) / 2;
+
+        console.log(`[layout] PASS 3: "${group.name}" bounds: (${offsetX}, ${offsetY}) -> (${offsetX + data.width}, ${offsetY + data.height})`);
     });
 
     // Create colored dot patterns for each workflow group

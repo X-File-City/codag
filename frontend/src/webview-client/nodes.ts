@@ -1,7 +1,7 @@
 // Node rendering
 import * as state from './state';
-import { getNodeIcon, sharedIcon } from './icons';
-import { TYPE_COLORS, NODE_WIDTH, NODE_HEIGHT, NODE_HALF_WIDTH, NODE_HALF_HEIGHT, NODE_BORDER_RADIUS, NODE_ICON_SCALE } from './constants';
+import { sharedIcon } from './icons';
+import { NODE_WIDTH, NODE_HEIGHT, NODE_BORDER_RADIUS } from './constants';
 import { intersectRect } from './utils';
 
 declare const d3: any;
@@ -34,52 +34,36 @@ export function renderNodes(
             .on('drag', dragged)
             .on('end', dragended));
 
-    // Add full background fill
+    // Add full background fill (dynamic dimensions) - LLM nodes get blue background
     node.append('rect')
-        .attr('width', NODE_WIDTH)
-        .attr('height', NODE_HEIGHT)
-        .attr('x', -NODE_HALF_WIDTH)
-        .attr('y', -NODE_HALF_HEIGHT)
+        .attr('width', (d: any) => d.width || NODE_WIDTH)
+        .attr('height', (d: any) => d.height || NODE_HEIGHT)
+        .attr('x', (d: any) => -(d.width || NODE_WIDTH) / 2)
+        .attr('y', (d: any) => -(d.height || NODE_HEIGHT) / 2)
         .attr('rx', NODE_BORDER_RADIUS)
-        .style('fill', 'var(--vscode-editor-background)')
+        .style('fill', (d: any) => d.type === 'llm' ? '#64B5F6' : 'var(--vscode-editor-background)')
         .style('stroke', 'none');
 
-    // Add dark header background (top 30px, rounded top corners)
-    node.append('path')
-        .attr('class', 'node-header')
-        .attr('d', 'M -66,-61 L 66,-61 A 4,4 0 0,1 70,-57 L 70,-31 L -70,-31 L -70,-57 A 4,4 0 0,1 -66,-61 Z')
-        .style('fill', 'var(--vscode-editor-background)')
-        .style('stroke', 'none');
 
-    // Add grey body background (bottom 92px, rounded bottom corners)
-    node.append('path')
-        .attr('class', 'node-body')
-        .attr('d', 'M -70,-31 L 70,-31 L 70,57 A 4,4 0 0,1 66,61 L -66,61 A 4,4 0 0,1 -70,57 Z')
-        .style('fill', 'color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-editor-foreground))')
-        .style('stroke', 'none');
-
-    // Add type-colored border
+    // Add neutral border (dynamic dimensions)
     node.append('rect')
         .attr('class', 'node-border')
-        .attr('width', NODE_WIDTH)
-        .attr('height', NODE_HEIGHT)
-        .attr('x', -NODE_HALF_WIDTH)
-        .attr('y', -NODE_HALF_HEIGHT)
+        .attr('width', (d: any) => d.width || NODE_WIDTH)
+        .attr('height', (d: any) => d.height || NODE_HEIGHT)
+        .attr('x', (d: any) => -(d.width || NODE_WIDTH) / 2)
+        .attr('y', (d: any) => -(d.height || NODE_HEIGHT) / 2)
         .attr('rx', NODE_BORDER_RADIUS)
         .style('fill', 'none')
-        .style('stroke', (d: any) => TYPE_COLORS[d.type] || '#90A4AE')
+        .style('stroke', 'var(--vscode-editorWidget-border)')
         .style('stroke-width', '2px')
         .style('pointer-events', 'all');
 
-    // Add title centered in body with text wrapping and 3-line clamp
-    // Body spans from y=-31 (header bottom) to y=+61 (node bottom) = 92px
-    // 5px padding matches horizontal, -1px shift up for visual alignment
-    // Outer div: flexbox for centering, inner span: line-clamp for truncation
+    // Add title centered in node with text wrapping
     const titleWrapper = node.append('foreignObject')
-        .attr('x', -65)
-        .attr('y', -27)
-        .attr('width', 130)
-        .attr('height', 83)
+        .attr('x', (d: any) => -(d.width || NODE_WIDTH) / 2 + 4)
+        .attr('y', (d: any) => -(d.height || NODE_HEIGHT) / 2 + 4)
+        .attr('width', (d: any) => (d.width || NODE_WIDTH) - 8)
+        .attr('height', (d: any) => (d.height || NODE_HEIGHT) - 8)
         .append('xhtml:div')
         .attr('class', 'node-title-wrapper')
         .style('width', '100%')
@@ -90,56 +74,22 @@ export function renderNodes(
 
     titleWrapper.append('xhtml:span')
         .attr('lang', 'en')
-        .style('display', '-webkit-box')
-        .style('-webkit-line-clamp', '3')
-        .style('-webkit-box-orient', 'vertical')
-        .style('overflow', 'hidden')
         .style('text-align', 'center')
-        .style('color', 'var(--vscode-editor-foreground)')
+        .style('color', (d: any) => d.type === 'llm' ? '#ffffff' : 'var(--vscode-editor-foreground)')
         .style('font-family', '"DM Sans", "Inter", "Segoe UI", -apple-system, sans-serif')
-        .style('font-size', '17px')
+        .style('font-size', '15px')
         .style('font-weight', '400')
         .style('letter-spacing', '-0.01em')
-        .style('line-height', '1.35')
+        .style('line-height', '1.2')
         .style('word-wrap', 'break-word')
-        .style('hyphens', 'auto')
-        .style('-webkit-hyphens', 'auto')
+        .style('overflow-wrap', 'break-word')
         .text((d: any) => d.label);
-
-    // Add icon at top-left of header (centered vertically with type label)
-    node.append('g')
-        .attr('class', (d: any) => `node-icon ${d.type}`)
-        .attr('transform', `translate(-62, -55) scale(${NODE_ICON_SCALE})`)
-        .html((d: any) => getNodeIcon(d.type));
-
-    // Add node type label next to icon in header
-    node.append('text')
-        .attr('class', 'node-type')
-        .text((d: any) => d.type.toUpperCase())
-        .attr('x', -38)
-        .attr('y', -43)
-        .attr('dominant-baseline', 'middle')
-        .style('text-anchor', 'start');
-
-    // Add entry icon (top-right, green door with arrow in)
-    node.filter((d: any) => d.isEntryPoint)
-        .append('g')
-        .attr('class', 'entry-icon')
-        .attr('transform', 'translate(52, -52) scale(0.7)')
-        .html('<svg viewBox="0 0 24 24" width="20" height="20"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M13.8 12H3" stroke="#4CAF50" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
-
-    // Add exit icon (top-right, red door with arrow out)
-    node.filter((d: any) => d.isExitPoint)
-        .append('g')
-        .attr('class', 'exit-icon')
-        .attr('transform', (d: any) => d.isEntryPoint ? 'translate(32, -52) scale(0.7)' : 'translate(52, -52) scale(0.7)')
-        .html('<svg viewBox="0 0 24 24" width="20" height="20"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" stroke="#f44336" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
 
     // Add SHARED badge (bottom-left) for shared node copies
     const sharedBadge = node.filter((d: any) => d._originalId != null)
         .append('g')
         .attr('class', 'shared-badge')
-        .attr('transform', 'translate(-62, 47)');
+        .attr('transform', (d: any) => `translate(${-(d.width || NODE_WIDTH) / 2 + 6}, ${(d.height || NODE_HEIGHT) / 2 - 10}) scale(0.8)`);
 
     sharedBadge.append('g')
         .attr('class', 'shared-badge-icon')
@@ -156,16 +106,16 @@ export function renderNodes(
         .style('letter-spacing', '0.05em')
         .text('SHARED');
 
-    // Add selection indicator (camera corners)
+    // Add selection indicator (camera corners) - dynamic based on node dimensions
     const cornerSize = 8;
-    const cornerOffsetX = 78;
-    const cornerOffsetY = 69;
     node.append('g')
         .attr('class', 'node-selection-indicator')
         .attr('data-node-id', (d: any) => d.id)
         .style('display', 'none')
-        .each(function(this: SVGGElement) {
+        .each(function(this: SVGGElement, d: any) {
             const group = d3.select(this);
+            const cornerOffsetX = (d.width || NODE_WIDTH) / 2 + 8;
+            const cornerOffsetY = (d.height || NODE_HEIGHT) / 2 + 8;
             group.append('path').attr('d', `M -${cornerOffsetX} -${cornerOffsetY - cornerSize} L -${cornerOffsetX} -${cornerOffsetY} L -${cornerOffsetX - cornerSize} -${cornerOffsetY}`);
             group.append('path').attr('d', `M ${cornerOffsetX - cornerSize} -${cornerOffsetY} L ${cornerOffsetX} -${cornerOffsetY} L ${cornerOffsetX} -${cornerOffsetY - cornerSize}`);
             group.append('path').attr('d', `M -${cornerOffsetX} ${cornerOffsetY - cornerSize} L -${cornerOffsetX} ${cornerOffsetY} L -${cornerOffsetX - cornerSize} ${cornerOffsetY}`);
@@ -215,9 +165,11 @@ export function renderNodes(
  * Draw a curved dotted arrow between two shared node copies
  */
 function drawSharedCopyArrow(container: any, fromNode: any, toNode: any): void {
-    // Calculate edge intersection points at node boundaries
-    const startPoint = intersectRect(toNode, fromNode, NODE_WIDTH, NODE_HEIGHT);
-    const endPoint = intersectRect(fromNode, toNode, NODE_WIDTH, NODE_HEIGHT);
+    // Calculate edge intersection points at node boundaries (use dynamic widths)
+    const fromWidth = fromNode.width || NODE_WIDTH;
+    const toWidth = toNode.width || NODE_WIDTH;
+    const startPoint = intersectRect(toNode, fromNode, toWidth, NODE_HEIGHT);
+    const endPoint = intersectRect(fromNode, toNode, fromWidth, NODE_HEIGHT);
 
     const dx = endPoint.x - startPoint.x;
     const dy = endPoint.y - startPoint.y;

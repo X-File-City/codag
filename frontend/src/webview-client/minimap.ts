@@ -71,11 +71,11 @@ export function renderMinimap(): void {
                 .attr('width', (group.bounds.maxX - group.bounds.minX) * scale)
                 .attr('height', (group.bounds.maxY - group.bounds.minY) * scale)
                 .attr('rx', 2)
-                .style('fill', 'none')
-                .style('stroke', 'var(--vscode-button-background)')
+                .style('fill', group.color)
+                .style('fill-opacity', 0.15)
+                .style('stroke', group.color)
                 .style('stroke-width', '1px')
-                .style('stroke-dasharray', '2,2')
-                .style('opacity', 0.6);
+                .style('stroke-opacity', 0.5);
         }
     });
 
@@ -98,9 +98,9 @@ export function renderMinimap(): void {
         }
     });
 
-    // Render nodes
+    // Render only LLM nodes
     currentGraphData.nodes.forEach((node: any) => {
-        if (!isNaN(node.x) && !isNaN(node.y)) {
+        if (node.type === 'llm' && !isNaN(node.x) && !isNaN(node.y)) {
             minimapG.append('circle')
                 .attr('class', `minimap-node ${node.type}`)
                 .attr('cx', toMinimapX(node.x))

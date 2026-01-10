@@ -4,9 +4,12 @@ import { GRID_SIZE, ARROW_HEAD_LENGTH } from './constants';
 
 /**
  * Snap value to nearest grid point
+ * TODO: Debug - grid snapping may cause workflow spacing inconsistencies
  */
 export function snapToGrid(value: number): number {
-    return Math.round(value / GRID_SIZE) * GRID_SIZE;
+    // Disabled temporarily to debug workflow spacing
+    return value;
+    // return Math.round(value / GRID_SIZE) * GRID_SIZE;
 }
 
 /**
@@ -143,17 +146,47 @@ function shortenEndpoint(
 }
 
 /**
- * Generate curved path for cross-workflow edges
+ * Determine which edge of a rectangle a point is on
+ * Returns direction vector perpendicular to that edge (pointing outward)
+ */
+function getEdgeDirection(
+    point: { x: number; y: number },
+    nodeCenter: { x: number; y: number },
+    halfWidth: number,
+    halfHeight: number
+): { x: number; y: number } {
+    const dx = point.x - nodeCenter.x;
+    const dy = point.y - nodeCenter.y;
+
+    // Check which edge the point is on
+    const onLeft = Math.abs(dx + halfWidth) < 1;
+    const onRight = Math.abs(dx - halfWidth) < 1;
+    const onTop = Math.abs(dy + halfHeight) < 1;
+    const onBottom = Math.abs(dy - halfHeight) < 1;
+
+    if (onTop) return { x: 0, y: -1 };
+    if (onBottom) return { x: 0, y: 1 };
+    if (onLeft) return { x: -1, y: 0 };
+    if (onRight) return { x: 1, y: 0 };
+
+    // Fallback: use direction from center
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    return dist > 0 ? { x: dx / dist, y: dy / dist } : { x: 0, y: 1 };
+}
+
+/**
+ * Generate edge path with cubic bezier curves
+ * Control points extend perpendicular to node edges for smooth curves
  */
 export function generateEdgePath(
     edge: any,
     sourceNode: any,
     targetNode: any,
     workflowGroups: any[],
-    targetWidth: number = 140,
-    targetHeight: number = 122,
-    sourceWidth: number = 140,
-    sourceHeight: number = 122,
+    targetWidth: number = 200,
+    targetHeight: number = 54,
+    sourceWidth: number = 200,
+    sourceHeight: number = 54,
     allEdges: any[] = []
 ): string {
     // Validate nodes exist and have valid coordinates
@@ -166,34 +199,67 @@ export function generateEdgePath(
         return '';
     }
 
-    // Check if this is a cross-workflow edge
-    const sourceGroup = workflowGroups.find((g: any) => g.nodes.includes(edge.source));
-    const targetGroup = workflowGroups.find((g: any) => g.nodes.includes(edge.target));
-    const isCrossWorkflow = sourceGroup && targetGroup && sourceGroup.id !== targetGroup.id;
+    // Use dynamic dimensions from node if available
+    const srcWidth = sourceNode.width || sourceWidth;
+    const srcHeight = sourceNode.height || sourceHeight;
+    const tgtWidth = targetNode.width || targetWidth;
+    const tgtHeight = targetNode.height || targetHeight;
 
     // Check if bidirectional (reverse edge exists)
     const isBidirectional = allEdges.some((e: any) => e.source === edge.target && e.target === edge.source);
 
-    // Calculate intersection at target node boundary (always needed for arrow)
-    const targetIntersection = intersectRect(sourceNode, targetNode, targetWidth, targetHeight);
-    const endpoint = shortenEndpoint(sourceNode, targetIntersection, ARROW_HEAD_LENGTH);
+    // Calculate intersection at source node boundary
+    const sourceIntersection = intersectRect(targetNode, sourceNode, srcWidth, srcHeight);
 
-    // Only shorten source end for bidirectional edges
-    let startpoint: { x: number; y: number };
-    if (isBidirectional) {
-        const sourceIntersection = intersectRect(targetNode, sourceNode, sourceWidth, sourceHeight);
-        startpoint = shortenEndpoint(targetNode, sourceIntersection, ARROW_HEAD_LENGTH);
-    } else {
-        startpoint = intersectRect(targetNode, sourceNode, sourceWidth, sourceHeight);
-    }
+    // Calculate intersection at target node boundary
+    const targetIntersection = intersectRect(sourceNode, targetNode, tgtWidth, tgtHeight);
 
-    if (isCrossWorkflow) {
-        // Generate smooth quadratic Bezier curve for cross-workflow edges
-        const midY = (startpoint.y + endpoint.y) / 2;
-        // Control point at vertical midpoint to create smooth curve
-        return `M${startpoint.x},${startpoint.y} Q${startpoint.x},${midY} ${endpoint.x},${endpoint.y}`;
-    } else {
-        // Straight line for within-workflow edges
+    // Get direction vectors (perpendicular to the edge each point is on)
+    const startDir = getEdgeDirection(sourceIntersection, sourceNode, srcWidth / 2, srcHeight / 2);
+    const endDir = getEdgeDirection(targetIntersection, targetNode, tgtWidth / 2, tgtHeight / 2);
+
+    // Shorten endpoint along the curve's approach direction
+    const startpoint = sourceIntersection;
+    const endpoint = {
+        x: targetIntersection.x + endDir.x * ARROW_HEAD_LENGTH,
+        y: targetIntersection.y + endDir.y * ARROW_HEAD_LENGTH
+    };
+
+    // Direction from start to end point (flow)
+    const dx = endpoint.x - startpoint.x;
+    const dy = endpoint.y - startpoint.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < 10) {
         return `M${startpoint.x},${startpoint.y} L${endpoint.x},${endpoint.y}`;
     }
+
+    const flowDirX = dx / dist;
+    const flowDirY = dy / dist;
+
+    // Blend perpendicular direction with flow direction
+    // This limits curve to 90° max while still exiting/entering perpendicular-ish
+    const blendFactor = 0.5; // 0 = pure flow, 1 = pure perpendicular
+
+    // Start control: blend startDir with flowDir
+    let ctrl1DirX = startDir.x * blendFactor + flowDirX * (1 - blendFactor);
+    let ctrl1DirY = startDir.y * blendFactor + flowDirY * (1 - blendFactor);
+    let len1 = Math.sqrt(ctrl1DirX * ctrl1DirX + ctrl1DirY * ctrl1DirY);
+    if (len1 > 0) { ctrl1DirX /= len1; ctrl1DirY /= len1; }
+
+    // End control: blend endDir with -flowDir (pointing back)
+    let ctrl2DirX = endDir.x * blendFactor + (-flowDirX) * (1 - blendFactor);
+    let ctrl2DirY = endDir.y * blendFactor + (-flowDirY) * (1 - blendFactor);
+    let len2 = Math.sqrt(ctrl2DirX * ctrl2DirX + ctrl2DirY * ctrl2DirY);
+    if (len2 > 0) { ctrl2DirX /= len2; ctrl2DirY /= len2; }
+
+    // Control offset scales with distance
+    const ctrlOffset = Math.min(dist * 0.4, 60);
+
+    const ctrl1X = startpoint.x + ctrl1DirX * ctrlOffset;
+    const ctrl1Y = startpoint.y + ctrl1DirY * ctrlOffset;
+    const ctrl2X = endpoint.x + ctrl2DirX * ctrlOffset;
+    const ctrl2Y = endpoint.y + ctrl2DirY * ctrlOffset;
+
+    return `M${startpoint.x},${startpoint.y} C${ctrl1X},${ctrl1Y} ${ctrl2X},${ctrl2Y} ${endpoint.x},${endpoint.y}`;
 }

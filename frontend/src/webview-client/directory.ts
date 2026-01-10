@@ -115,23 +115,20 @@ export function focusOnWorkflow(groupOrName: any | string): void {
     const width = svgEl.clientWidth;
     const height = svgEl.clientHeight;
 
-    // Target: top-left of workflow bounds with title visible
-    // Add some padding so title is clearly in view
-    const targetX = group.bounds.minX - 50;
-    const targetY = group.bounds.minY - 30;
-
-    // Calculate scale to fit workflow width, but cap at reasonable zoom
+    // Calculate workflow dimensions and center
     const workflowWidth = group.bounds.maxX - group.bounds.minX;
     const workflowHeight = group.bounds.maxY - group.bounds.minY;
+    const centerX = (group.bounds.minX + group.bounds.maxX) / 2;
+    const centerY = (group.bounds.minY + group.bounds.maxY) / 2;
 
-    // Use a scale that shows the workflow nicely (not too zoomed)
-    const scaleX = (width * 0.7) / workflowWidth;
-    const scaleY = (height * 0.7) / workflowHeight;
-    const scale = Math.min(Math.max(Math.min(scaleX, scaleY), 0.5), 1.2);
+    // Calculate scale to fit entire workflow with padding (85% of viewport)
+    const scaleX = (width * 0.85) / workflowWidth;
+    const scaleY = (height * 0.85) / workflowHeight;
+    const scale = Math.min(Math.max(Math.min(scaleX, scaleY), 0.3), 1.5);
 
-    // Calculate transform to center the workflow start
-    const tx = width / 4 - targetX * scale;
-    const ty = height / 3 - targetY * scale;
+    // Calculate transform to center the workflow in the viewport
+    const tx = width / 2 - centerX * scale;
+    const ty = height / 2 - centerY * scale;
 
     // Expand workflow if collapsed
     if (group.collapsed) {

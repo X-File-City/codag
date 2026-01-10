@@ -31,6 +31,9 @@ export let expandedComponents: Set<string> = new Set();
 // Shared node copies: originalId -> [virtualIds]
 export let sharedNodeCopies: Map<string, string[]> = new Map();
 
+// Per-node dimensions: nodeId -> {width, height}
+export let nodeDimensions: Map<string, { width: number; height: number }> = new Map();
+
 // D3 selections for various elements
 export let node: any = null;
 export let link: any = null;
@@ -149,6 +152,16 @@ export function setSharedNodeCopies(copies: Map<string, string[]>): void {
 // Get shared node copies
 export function getSharedNodeCopies(): Map<string, string[]> {
     return sharedNodeCopies;
+}
+
+// Set node dimensions map
+export function setNodeDimensions(dimensions: Map<string, { width: number; height: number }>): void {
+    nodeDimensions = dimensions;
+}
+
+// Get stored node dimensions by ID
+export function getStoredNodeDimensions(nodeId: string): { width: number; height: number } | undefined {
+    return nodeDimensions.get(nodeId);
 }
 
 // Set shared arrows container

@@ -3,25 +3,20 @@ import * as state from './state';
 import { getNodeWorkflowCount, generateEdgePath, getNodeOrCollapsedGroup, getVirtualNodeId } from './utils';
 import { renderMinimap } from './minimap';
 import { getNodeDimensions, positionTooltipNearMouse } from './helpers';
-import { measureTextWidth } from './groups';
 import {
     NODE_WIDTH, NODE_HEIGHT, NODE_HALF_WIDTH,
-    COLLAPSED_GROUP_HALF_WIDTH, COLLAPSED_GROUP_HALF_HEIGHT,
     GROUP_BOUNDS_PADDING_X, GROUP_BOUNDS_PADDING_TOP, GROUP_BOUNDS_PADDING_BOTTOM,
-    GROUP_TITLE_OFFSET_X, GROUP_TITLE_OFFSET_Y,
-    GROUP_COLLAPSE_BTN_X, GROUP_COLLAPSE_BTN_Y, GROUP_COLLAPSE_BTN_SIZE,
     TRANSITION_FAST, TRANSITION_NORMAL
 } from './constants';
 
 declare const d3: any;
 
-export function setupControls(updateGroupVisibility: () => void): void {
+export function setupControls(): void {
     // Attach click handlers via addEventListener
     document.getElementById('btn-zoom-in')?.addEventListener('click', zoomIn);
     document.getElementById('btn-zoom-out')?.addEventListener('click', zoomOut);
     document.getElementById('btn-fit-screen')?.addEventListener('click', () => fitToScreen());
-    document.getElementById('btn-expand-all')?.addEventListener('click', () => toggleExpandAll(updateGroupVisibility));
-    document.getElementById('btn-format')?.addEventListener('click', () => formatGraph(updateGroupVisibility));
+    document.getElementById('btn-format')?.addEventListener('click', () => formatGraph());
     document.getElementById('btn-analyze')?.addEventListener('click', openAnalyzePanel);
     document.getElementById('legend-header')?.addEventListener('click', toggleLegend);
 
@@ -32,22 +27,6 @@ export function setupControls(updateGroupVisibility: () => void): void {
 function openAnalyzePanel(): void {
     console.log('openAnalyzePanel button clicked');
     state.vscode.postMessage({ command: 'openAnalyzePanel' });
-}
-
-function toggleExpandAll(updateGroupVisibility: () => void): void {
-    const { workflowGroups } = state;
-    if (!workflowGroups || workflowGroups.length === 0) return;
-
-    const anyExpanded = workflowGroups.some((g: any) => !g.collapsed && g.id !== 'group_orphans');
-    const shouldCollapse = anyExpanded;
-
-    workflowGroups.forEach((g: any) => {
-        if (g.id !== 'group_orphans') {
-            g.collapsed = shouldCollapse;
-        }
-    });
-
-    updateGroupVisibility();
 }
 
 function toggleLegend(): void {
@@ -75,7 +54,7 @@ function zoomOut(): void {
 }
 
 function setupButtonTooltips(): void {
-    const tooltips = ['Zoom In', 'Zoom Out', 'Fit to Screen', 'Expand/Collapse All Workflows', 'Reset Layout', 'Analyze Files'];
+    const tooltips = ['Zoom In', 'Zoom Out', 'Fit to Screen', 'Reset Layout', 'Analyze Files'];
 
     document.querySelectorAll('#controls button').forEach((btn, index) => {
         btn.addEventListener('mouseenter', (e) => showButtonTooltip(e as MouseEvent, tooltips[index]));
@@ -137,8 +116,8 @@ export function fitToScreen(): void {
     );
 }
 
-export function formatGraph(updateGroupVisibility: () => void): void {
-    const { svg, currentGraphData, workflowGroups, originalPositions, link, linkHover } = state;
+export function formatGraph(): void {
+    const { svg, currentGraphData, workflowGroups, originalPositions } = state;
 
     // Reset all nodes to their original dagre-computed positions
     currentGraphData.nodes.forEach((node: any) => {
@@ -175,45 +154,40 @@ export function formatGraph(updateGroupVisibility: () => void): void {
         );
         if (allGroupNodes.length === 0) return;
 
-        // Build positions array, handling shared nodes via virtual IDs
-        const positions: { x: number; y: number }[] = [];
+        // Build positions array with width and height, handling shared nodes via virtual IDs
+        const nodesWithBounds: { x: number; y: number; width: number; height: number }[] = [];
         allGroupNodes.forEach((node: any) => {
             const isShared = getNodeWorkflowCount(node.id, workflowGroups) > 1;
+            const width = node.width || NODE_WIDTH;
+            const height = node.height || NODE_HEIGHT;
             if (isShared) {
                 // Shared nodes: get position from originalPositions using virtual ID
                 const virtualId = getVirtualNodeId(node.id, group.id);
                 const pos = originalPositions.get(virtualId);
                 if (pos) {
-                    positions.push({ x: pos.x, y: pos.y });
+                    nodesWithBounds.push({ x: pos.x, y: pos.y, width, height });
                 }
             } else {
                 // Non-shared nodes: use position directly from node
                 if (typeof node.x === 'number' && typeof node.y === 'number') {
-                    positions.push({ x: node.x, y: node.y });
+                    nodesWithBounds.push({ x: node.x, y: node.y, width, height });
                 }
             }
         });
-        if (positions.length === 0) return;
+        if (nodesWithBounds.length === 0) return;
 
-        const xs = positions.map(p => p.x);
-        const ys = positions.map(p => p.y);
+        // Calculate edges (not centers) using dynamic node dimensions
+        const leftEdges = nodesWithBounds.map(n => n.x - n.width / 2);
+        const rightEdges = nodesWithBounds.map(n => n.x + n.width / 2);
+        const topEdges = nodesWithBounds.map(n => n.y - n.height / 2);
+        const bottomEdges = nodesWithBounds.map(n => n.y + n.height / 2);
 
         group.bounds = {
-            minX: Math.min(...xs) - GROUP_BOUNDS_PADDING_X,
-            maxX: Math.max(...xs) + GROUP_BOUNDS_PADDING_X,
-            minY: Math.min(...ys) - GROUP_BOUNDS_PADDING_TOP,
-            maxY: Math.max(...ys) + GROUP_BOUNDS_PADDING_BOTTOM
+            minX: Math.min(...leftEdges) - GROUP_BOUNDS_PADDING_X,
+            maxX: Math.max(...rightEdges) + GROUP_BOUNDS_PADDING_X,
+            minY: Math.min(...topEdges) - GROUP_BOUNDS_PADDING_TOP,
+            maxY: Math.max(...bottomEdges) + GROUP_BOUNDS_PADDING_BOTTOM
         };
-
-        // Expand bounds to fit title if needed
-        const fontFamily = '"Inter", "Segoe UI", "SF Pro Display", -apple-system, sans-serif';
-        const titleText = `${group.name} (${group.nodes.length} nodes)`;
-        const titleWidth = measureTextWidth(titleText, '19px', '500', fontFamily);
-        const requiredWidth = titleWidth + GROUP_TITLE_OFFSET_X + 40;
-        const currentWidth = group.bounds.maxX - group.bounds.minX;
-        if (requiredWidth > currentWidth) {
-            group.bounds.maxX = group.bounds.minX + requiredWidth;
-        }
 
         group.centerX = (group.bounds.minX + group.bounds.maxX) / 2;
         group.centerY = (group.bounds.minY + group.bounds.maxY) / 2;
@@ -233,46 +207,8 @@ export function formatGraph(updateGroupVisibility: () => void): void {
         .filter((d: any) => d.bounds && !isNaN(d.bounds.minX))
         .transition()
         .duration(TRANSITION_NORMAL)
-        .attr('x', (d: any) => d.bounds.minX + GROUP_TITLE_OFFSET_X)
-        .attr('y', (d: any) => d.bounds.minY + GROUP_TITLE_OFFSET_Y);
-
-    svg.selectAll('.group-collapse-btn rect')
-        .filter((d: any) => d.bounds && !isNaN(d.bounds.minX))
-        .transition()
-        .duration(TRANSITION_NORMAL)
-        .attr('x', (d: any) => d.bounds.minX + GROUP_COLLAPSE_BTN_X)
-        .attr('y', (d: any) => d.bounds.minY + GROUP_COLLAPSE_BTN_Y);
-
-    svg.selectAll('.group-collapse-btn text')
-        .filter((d: any) => d.bounds && !isNaN(d.bounds.minX))
-        .transition()
-        .duration(TRANSITION_NORMAL)
-        .attr('x', (d: any) => d.bounds.minX + GROUP_COLLAPSE_BTN_X + GROUP_COLLAPSE_BTN_SIZE / 2)
-        .attr('y', (d: any) => d.bounds.minY + GROUP_TITLE_OFFSET_Y);
-
-    // Update collapsed groups
-    svg.selectAll('.collapsed-group-node rect')
-        .filter((d: any) => !isNaN(d.centerX) && !isNaN(d.centerY))
-        .transition()
-        .duration(TRANSITION_NORMAL)
-        .attr('x', (d: any) => d.centerX - COLLAPSED_GROUP_HALF_WIDTH)
-        .attr('y', (d: any) => d.centerY - COLLAPSED_GROUP_HALF_HEIGHT + 10);
-
-    svg.selectAll('.collapsed-group-node')
-        .filter((d: any) => !isNaN(d.centerX) && !isNaN(d.centerY))
-        .each(function(this: SVGGElement, d: any) {
-            const group = d3.select(this);
-
-            // Update background rects
-            group.selectAll('rect').transition().duration(TRANSITION_NORMAL)
-                .attr('x', d.centerX - COLLAPSED_GROUP_HALF_WIDTH)
-                .attr('y', d.centerY - COLLAPSED_GROUP_HALF_HEIGHT);
-
-            // Update foreignObject (contains all text content)
-            group.select('foreignObject').transition().duration(TRANSITION_NORMAL)
-                .attr('x', d.centerX - COLLAPSED_GROUP_HALF_WIDTH)
-                .attr('y', d.centerY - COLLAPSED_GROUP_HALF_HEIGHT);
-        });
+        .attr('x', (d: any) => d.bounds.minX)
+        .attr('y', (d: any) => d.bounds.minY - 8);
 
     // Update nodes
     svg.selectAll('.node')
@@ -283,6 +219,23 @@ export function formatGraph(updateGroupVisibility: () => void): void {
 
     // Update edges
     const getNode = (nodeId: string) => {
+        // Check if this is a component placeholder
+        if (nodeId.startsWith('__comp_')) {
+            const compId = nodeId.replace('__comp_', '');
+            for (const group of workflowGroups) {
+                for (const comp of (group.components || [])) {
+                    if (comp.id === compId && comp.centerX !== undefined && comp.centerY !== undefined) {
+                        return {
+                            id: nodeId,
+                            x: comp.centerX,
+                            y: comp.centerY,
+                            width: 100,
+                            height: 60
+                        };
+                    }
+                }
+            }
+        }
         // Check expandedNodes first (for virtual IDs of shared nodes)
         const expanded = state.expandedNodes.find((n: any) => n.id === nodeId);
         if (expanded) return expanded;

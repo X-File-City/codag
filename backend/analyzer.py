@@ -39,6 +39,53 @@ class StaticAnalyzer:
         r"from\s+huggingface_hub\s+import",
         r"InferenceClient",
         r"from\s+['\"]@huggingface/inference['\"]",
+
+        # xAI/Grok
+        r"from\s+xai\s+import",
+        r"import\s+xai",
+        r"api\.x\.ai",
+
+        # Mistral AI
+        r"from\s+mistralai\s+import",
+        r"MistralClient",
+        r"Mistral\s*\(",
+
+        # Together AI
+        r"from\s+together\s+import",
+        r"Together\s*\(",
+
+        # Replicate
+        r"import\s+replicate",
+        r"from\s+replicate\s+import",
+        r"replicate\.run",
+
+        # Fireworks AI
+        r"from\s+fireworks\s+import",
+        r"fireworks\.client",
+
+        # AWS Bedrock
+        r"bedrock-runtime",
+        r"InvokeModel",
+        r"BedrockRuntimeClient",
+
+        # Azure OpenAI
+        r"AzureOpenAI",
+        r"azure\.ai\.openai",
+
+        # Vertex AI
+        r"google\.cloud\.aiplatform",
+        r"from\s+vertexai",
+        r"import\s+vertexai",
+
+        # AI21
+        r"from\s+ai21\s+import",
+        r"AI21Client",
+
+        # DeepSeek
+        r"api\.deepseek\.com",
+
+        # OpenRouter
+        r"openrouter\.ai",
     ]
 
     # LLM API Call Patterns
@@ -82,6 +129,28 @@ class StaticAnalyzer:
             r"from\s+crewai",
             r"import\s+.*from\s+['\"]crewai['\"]",
             r"Crew\s*\(",
+        ],
+        "llamaindex": [
+            r"from\s+llama_index",
+            r"import\s+.*from\s+['\"]llamaindex['\"]",
+            r"import\s+.*from\s+['\"]@llama-index",
+        ],
+        "autogen": [
+            r"from\s+autogen",
+            r"from\s+pyautogen",
+        ],
+        "haystack": [
+            r"from\s+haystack",
+        ],
+        "semantickernel": [
+            r"from\s+semantic_kernel",
+        ],
+        "pydanticai": [
+            r"from\s+pydantic_ai",
+        ],
+        "instructor": [
+            r"import\s+instructor",
+            r"from\s+instructor\s+import",
         ]
     }
 

@@ -1,4 +1,4 @@
-.PHONY: setup run stop debug db-setup
+.PHONY: setup run stop debug db-setup kill
 
 setup: db-setup
 	@echo "Setting up backend..."
@@ -43,6 +43,8 @@ debug:
 	cd frontend && npm run compile
 	@echo "Launching VSCode extension in debug mode..."
 	@code --extensionDevelopmentPath=$(PWD)/frontend --user-data-dir=$(PWD)/.vscode-dev $(PWD)
+
+kill: stop
 
 stop:
 	@echo "Stopping backend..."

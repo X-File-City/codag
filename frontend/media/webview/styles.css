@@ -424,7 +424,7 @@ body {
     fill: none;
     stroke: var(--vscode-editor-foreground);
     stroke-opacity: 0.6;
-    stroke-width: 6px;
+    stroke-width: 2.8px;
     transition: stroke 0.2s ease, stroke-width 0.2s ease;
     pointer-events: none;
 }
@@ -739,24 +739,17 @@ body {
     cursor: pointer;
 }
 #minimap .minimap-node {
+    fill: var(--vscode-editor-foreground);
+    opacity: 0.5;
+}
+#minimap .minimap-node.llm {
+    fill: #64B5F6;
     opacity: 0.8;
 }
-#minimap .minimap-node.trigger { fill: #FFB74D; }
-#minimap .minimap-node.llm { fill: #64B5F6; }
-#minimap .minimap-node.tool { fill: #81C784; }
-#minimap .minimap-node.decision { fill: #BA68C8; }
-#minimap .minimap-node.integration { fill: #FF8A65; }
-#minimap .minimap-node.memory { fill: #4DB6AC; }
-#minimap .minimap-node.parser { fill: #A1887F; }
-#minimap .minimap-node.output { fill: #90A4AE; }
-#minimap .minimap-node.orchestrator { fill: #E91E63; }
-#minimap .minimap-node.agent { fill: #CDDC39; }
-#minimap .minimap-node.retriever { fill: #00BCD4; }
-#minimap .minimap-node.guardrail { fill: #F44336; }
 #minimap .minimap-edge {
     stroke: var(--vscode-editor-foreground);
     stroke-width: 1px;
-    opacity: 0.3;
+    opacity: 0.5;
     fill: none;
 }
 #minimap .minimap-viewport {
@@ -837,8 +830,7 @@ body {
 .directory-list {
     max-height: 300px;
     overflow-y: scroll;
-    padding: 4px 0 24px 0;
-    padding-right: 10px;
+    padding: 4px 10px 8px 0;
     position: relative;
 }
 .directory-list::-webkit-scrollbar {

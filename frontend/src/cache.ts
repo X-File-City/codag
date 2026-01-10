@@ -116,7 +116,7 @@ export class CacheManager {
             const normalized = {
                 // LLM-related imports (sorted for consistency)
                 imports: analysis.imports.filter(imp =>
-                    /openai|anthropic|gemini|ollama|cohere|langchain|langgraph|mastra|crewai|xai|grok|elevenlabs|runway|sync|stability|heygen|d-id|leonardo/i.test(imp)
+                    /openai|anthropic|gemini|ollama|cohere|langchain|langgraph|mastra|crewai|xai|grok|mistral|together|replicate|fireworks|bedrock|azure|vertexai|ai21|deepseek|openrouter|llama_index|autogen|haystack|instructor|pydantic_ai|elevenlabs|runway|sync|stability|heygen|d-id|leonardo/i.test(imp)
                 ).sort(),
 
                 // LLM-related variables (sorted)
@@ -320,20 +320,32 @@ export class CacheManager {
                 const workflowId = filePrefix ? `${filePrefix}_${workflow.id}` : workflow.id;
                 const remappedNodeIds = workflow.nodeIds.map((id: string) => idMap.get(id) || id);
 
+                // Remap component nodeIds as well
+                const remappedComponents = (workflow.components || []).map((comp: any) => ({
+                    ...comp,
+                    id: filePrefix ? `${filePrefix}_${comp.id}` : comp.id,
+                    nodeIds: comp.nodeIds.map((id: string) => idMap.get(id) || id)
+                }));
+
                 const existing = mergedWorkflows.get(workflowId);
                 if (existing) {
                     // Merge nodeIds arrays and deduplicate
                     const combinedNodeIds = [...new Set([...existing.nodeIds, ...remappedNodeIds])];
+                    // Merge components (don't duplicate)
+                    const existingCompIds = new Set((existing.components || []).map((c: any) => c.id));
+                    const newComponents = remappedComponents.filter((c: any) => !existingCompIds.has(c.id));
                     mergedWorkflows.set(workflowId, {
                         ...existing,
                         nodeIds: combinedNodeIds,
-                        description: existing.description || workflow.description
+                        description: existing.description || workflow.description,
+                        components: [...(existing.components || []), ...newComponents]
                     });
                 } else {
                     mergedWorkflows.set(workflowId, {
                         ...workflow,
                         id: workflowId,
-                        nodeIds: remappedNodeIds
+                        nodeIds: remappedNodeIds,
+                        components: remappedComponents
                     });
                 }
             }
