@@ -1298,6 +1298,14 @@ body {
     font-weight: 600;
 }
 
+.file-picker-cost {
+    margin-left: 12px;
+    padding-left: 12px;
+    border-left: 1px solid var(--vscode-panel-border);
+    color: var(--vscode-charts-green);
+    font-weight: 500;
+}
+
 .file-picker-actions {
     display: flex;
     gap: 8px;

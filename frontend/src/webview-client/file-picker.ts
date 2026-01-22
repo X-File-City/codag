@@ -111,11 +111,19 @@ export interface FileTreeNode {
     depth: number;
     selected: boolean;
     children: FileTreeNode[];
+    tokens?: number;  // Estimated tokens for cost calculation
+}
+
+interface PricingInfo {
+    inputPer1M: number;
+    outputPer1M: number;
+    outputPerFile: number;
 }
 
 interface FilePickerData {
     tree: FileTreeNode;
     totalFiles: number;
+    pricing?: PricingInfo;
 }
 
 export class FilePicker {
@@ -125,6 +133,8 @@ export class FilePicker {
     private selectedPaths: Set<string> = new Set();
     private collapsedPaths: Set<string> = new Set();
     private resolvePromise: ((paths: string[] | null) => void) | null = null;
+    private pricing: PricingInfo | null = null;
+    private tokensByPath: Map<string, number> = new Map();
 
     constructor() {}
 
@@ -134,10 +144,12 @@ export class FilePicker {
     show(data: FilePickerData): Promise<string[] | null> {
         this.tree = data.tree;
         this.totalFiles = data.totalFiles;
+        this.pricing = data.pricing || null;
         this.selectedPaths.clear();
+        this.tokensByPath.clear();
 
-        // Initialize selected paths from tree
-        this.collectSelectedPaths(this.tree);
+        // Initialize selected paths and token map from tree
+        this.collectSelectedPathsAndTokens(this.tree);
 
         this.render();
 
@@ -147,15 +159,60 @@ export class FilePicker {
     }
 
     /**
-     * Collect initially selected paths from tree
+     * Collect initially selected paths and token counts from tree
      */
-    private collectSelectedPaths(node: FileTreeNode) {
-        if (!node.isDirectory && node.selected) {
-            this.selectedPaths.add(node.path);
+    private collectSelectedPathsAndTokens(node: FileTreeNode) {
+        if (!node.isDirectory) {
+            if (node.selected) {
+                this.selectedPaths.add(node.path);
+            }
+            if (node.tokens !== undefined) {
+                this.tokensByPath.set(node.path, node.tokens);
+            }
         }
         for (const child of node.children) {
-            this.collectSelectedPaths(child);
+            this.collectSelectedPathsAndTokens(child);
         }
+    }
+
+    /**
+     * Calculate estimated cost for selected files
+     */
+    private calculateCost(): { tokens: number; cost: number; formatted: string } {
+        if (!this.pricing) {
+            return { tokens: 0, cost: 0, formatted: '' };
+        }
+
+        let totalTokens = 0;
+        for (const path of this.selectedPaths) {
+            totalTokens += this.tokensByPath.get(path) || 0;
+        }
+
+        // Add prompt overhead (~3000 tokens)
+        const inputTokens = totalTokens + 3000;
+        const outputTokens = this.selectedPaths.size * this.pricing.outputPerFile;
+
+        const inputCost = (inputTokens / 1_000_000) * this.pricing.inputPer1M;
+        const outputCost = (outputTokens / 1_000_000) * this.pricing.outputPer1M;
+        const totalCost = inputCost + outputCost;
+
+        const formatted = totalCost < 0.01
+            ? `$${totalCost.toFixed(4)}`
+            : `$${totalCost.toFixed(2)}`;
+
+        return { tokens: totalTokens, cost: totalCost, formatted };
+    }
+
+    /**
+     * Update the cost display in the footer
+     */
+    private updateCostDisplay() {
+        const costEl = this.modal?.querySelector('#cost-estimate');
+        if (!costEl || !this.pricing) return;
+
+        const { tokens, formatted } = this.calculateCost();
+        const tokensK = Math.round(tokens / 1000);
+        costEl.textContent = `~${tokensK}k tokens · Est. ${formatted}`;
     }
 
     /**
@@ -190,6 +247,7 @@ export class FilePicker {
                 <div class="file-picker-footer">
                     <div class="file-picker-count">
                         <span id="selected-count">${this.selectedPaths.size}</span> of ${this.totalFiles} files selected
+                        ${this.pricing ? `<span class="file-picker-cost" id="cost-estimate"></span>` : ''}
                     </div>
                     <div class="file-picker-actions">
                         <button class="file-picker-btn file-picker-btn-danger" id="file-picker-clear-cache">Delete Cache & Reanalyze</button>
@@ -205,6 +263,7 @@ export class FilePicker {
         // Add event listeners
         this.attachEventListeners();
         this.updateSelectAllState();
+        this.updateCostDisplay();
     }
 
     /**
@@ -493,6 +552,7 @@ export class FilePicker {
         }
 
         this.updateSelectAllState();
+        this.updateCostDisplay();
     }
 
     /**

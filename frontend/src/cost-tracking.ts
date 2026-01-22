@@ -85,6 +85,33 @@ export class CostAggregator {
 }
 
 /**
+ * Estimate cost for a batch of files before analysis
+ * Assumes:
+ * - Input = file content + prompt overhead (~3000 tokens)
+ * - Output = ~2000 tokens per file (typical node/edge output)
+ */
+export function estimateAnalysisCost(files: { content: string }[]): {
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCost: number;
+    formattedCost: string;
+} {
+    const PROMPT_OVERHEAD = 3000;  // System prompt, context, etc.
+    const OUTPUT_PER_FILE = 2000;  // Estimated output tokens per file
+
+    const inputTokens = files.reduce((sum, f) => sum + estimateTokens(f.content), 0) + PROMPT_OVERHEAD;
+    const outputTokens = files.length * OUTPUT_PER_FILE;
+    const estimatedCost = calculateCost(inputTokens, outputTokens);
+
+    return {
+        inputTokens,
+        outputTokens,
+        estimatedCost,
+        formattedCost: formatCost(estimatedCost)
+    };
+}
+
+/**
  * Display a detailed cost report in the output channel
  */
 export function displayCostReport(report: CostReport, log: (msg: string) => void): void {

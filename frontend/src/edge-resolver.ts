@@ -10,7 +10,7 @@
  */
 
 import { WorkflowGraph, WorkflowEdge, WorkflowNode } from './api';
-import { HttpConnection } from './http-endpoint-extractor';
+import { HttpConnection, CrossFileCall } from './repo-structure';
 import { CONFIG, SUPPORTED_EXTENSIONS } from './config';
 
 /**
@@ -305,71 +305,148 @@ export function logResolutionStats(
 }
 
 /**
+ * Extract relative path from a potentially full path.
+ * Looks for common project markers (backend/, frontend/, src/) to find relative portion.
+ */
+function toRelativePath(fullPath: string): string {
+    // Already relative if doesn't start with /
+    if (!fullPath.startsWith('/')) return fullPath;
+
+    // Look for common project directory markers
+    const markers = ['backend/', 'frontend/', 'src/', 'lib/', 'app/', 'pkg/', 'cmd/'];
+    for (const marker of markers) {
+        const idx = fullPath.indexOf(marker);
+        if (idx !== -1) {
+            return fullPath.slice(idx);
+        }
+    }
+
+    // Fallback: take last 2-3 path segments
+    const parts = fullPath.split('/').filter(Boolean);
+    if (parts.length >= 3) {
+        return parts.slice(-3).join('/');
+    }
+    if (parts.length >= 2) {
+        return parts.slice(-2).join('/');
+    }
+    return parts[parts.length - 1] || fullPath;
+}
+
+/**
  * Add cross-service edges from HTTP connections to the graph.
  * Creates edges between HTTP client calls and their matched route handlers.
- * Also creates placeholder nodes if endpoints don't exist as nodes yet.
+ * Uses fuzzy path matching to connect full paths to relative node IDs.
  */
 export function addHttpConnectionEdges(
     graph: WorkflowGraph,
-    httpConnections: HttpConnection[]
+    httpConnections: HttpConnection[],
+    log?: (msg: string) => void
 ): { graph: WorkflowGraph; addedEdges: number; addedNodes: number } {
+    const _log = log || console.log;
+
+    _log(`[HTTP-EDGES] Starting with ${httpConnections?.length || 0} connections, graph has ${graph.nodes.length} nodes`);
+
     if (!httpConnections || httpConnections.length === 0) {
+        _log(`[HTTP-EDGES] No connections to process`);
         return { graph, addedEdges: 0, addedNodes: 0 };
     }
 
+    // Build lookup for fuzzy matching (handles path suffix matching)
+    const lookup = buildNodeLookup(graph.nodes);
     const existingNodeIds = new Set(graph.nodes.map(n => n.id));
     const newNodes: WorkflowNode[] = [];
     const newEdges: WorkflowEdge[] = [];
 
-    for (const conn of httpConnections) {
-        // Build node IDs in deterministic format
-        const clientNodeId = `${conn.client.file}::${conn.client.function}`;
-        const handlerNodeId = `${conn.handler.file}::${conn.handler.function}`;
+    _log(`[HTTP-EDGES] Existing node IDs (${existingNodeIds.size}):`);
+    for (const id of Array.from(existingNodeIds).slice(0, 10)) {
+        _log(`[HTTP-EDGES]   - ${id}`);
+    }
+    if (existingNodeIds.size > 10) {
+        _log(`[HTTP-EDGES]   ... and ${existingNodeIds.size - 10} more`);
+    }
 
-        // Create placeholder node for client if it doesn't exist
-        if (!existingNodeIds.has(clientNodeId)) {
+    for (const conn of httpConnections) {
+        // Convert full paths to relative paths for node ID matching
+        const clientRelPath = toRelativePath(conn.client.file);
+        const handlerRelPath = toRelativePath(conn.handler.file);
+
+        // Build candidate node IDs (relative paths)
+        const clientCandidateId = `${clientRelPath}::${conn.client.function}`;
+        const handlerCandidateId = `${handlerRelPath}::${conn.handler.function}`;
+
+        _log(`[HTTP-EDGES] Processing connection:`);
+        _log(`[HTTP-EDGES]   Client: ${conn.client.file}::${conn.client.function} -> ${clientCandidateId}`);
+        _log(`[HTTP-EDGES]   Handler: ${conn.handler.file}::${conn.handler.function} -> ${handlerCandidateId}`);
+
+        // Try fuzzy matching to find existing nodes
+        const matchedClientId = findMatchingNodeId(clientCandidateId, lookup);
+        const matchedHandlerId = findMatchingNodeId(handlerCandidateId, lookup);
+
+        _log(`[HTTP-EDGES]   Matched client: ${matchedClientId || 'NONE'}`);
+        _log(`[HTTP-EDGES]   Matched handler: ${matchedHandlerId || 'NONE'}`);
+
+        // Use matched ID if found, otherwise use relative path candidate
+        const clientNodeId = matchedClientId || clientCandidateId;
+        const handlerNodeId = matchedHandlerId || handlerCandidateId;
+
+        // Create placeholder node for client if no match found
+        if (!matchedClientId && !existingNodeIds.has(clientNodeId)) {
+            _log(`[HTTP-EDGES]   Creating client node: ${clientNodeId}`);
             newNodes.push({
                 id: clientNodeId,
                 label: `${conn.client.method} ${conn.client.normalizedPath}`,
                 type: 'step',
                 source: {
-                    file: conn.client.file,
+                    file: clientRelPath,  // Use relative path
                     line: conn.client.line,
                     function: conn.client.function
                 }
             });
             existingNodeIds.add(clientNodeId);
+            // Add to lookup for subsequent matches
+            lookup.exact.add(clientNodeId);
+            lookup.exact.add(clientNodeId.toLowerCase());
         }
 
-        // Create placeholder node for handler if it doesn't exist
-        if (!existingNodeIds.has(handlerNodeId)) {
+        // Create placeholder node for handler if no match found
+        if (!matchedHandlerId && !existingNodeIds.has(handlerNodeId)) {
+            _log(`[HTTP-EDGES]   Creating handler node: ${handlerNodeId}`);
             newNodes.push({
                 id: handlerNodeId,
                 label: `Handle ${conn.handler.path}`,
                 type: 'step',
                 source: {
-                    file: conn.handler.file,
+                    file: handlerRelPath,  // Use relative path
                     line: conn.handler.line,
                     function: conn.handler.function
                 }
             });
             existingNodeIds.add(handlerNodeId);
+            lookup.exact.add(handlerNodeId);
+            lookup.exact.add(handlerNodeId.toLowerCase());
         }
 
         // Create edge between client and handler
         const edgeLabel = `${conn.client.method} ${conn.client.normalizedPath}`;
         const edgeExists = graph.edges.some(
             e => e.source === clientNodeId && e.target === handlerNodeId
+        ) || newEdges.some(
+            e => e.source === clientNodeId && e.target === handlerNodeId
         );
 
         if (!edgeExists) {
+            _log(`[HTTP-EDGES]   Creating edge: ${clientNodeId} --[${edgeLabel}]--> ${handlerNodeId}`);
             newEdges.push({
                 source: clientNodeId,
                 target: handlerNodeId,
                 label: edgeLabel
             });
+        } else {
+            _log(`[HTTP-EDGES]   Edge already exists, skipping`);
         }
     }
+
+    _log(`[HTTP-EDGES] Summary: Added ${newNodes.length} nodes, ${newEdges.length} edges`);
 
     return {
         graph: {
@@ -379,5 +456,70 @@ export function addHttpConnectionEdges(
         },
         addedEdges: newEdges.length,
         addedNodes: newNodes.length
+    };
+}
+
+/**
+ * Add cross-file function call edges to the graph.
+ * These are statically detected calls between files (e.g., main.py calling gemini_client.py).
+ * Uses fuzzy path matching to connect to existing nodes.
+ */
+export function addCrossFileCallEdges(
+    graph: WorkflowGraph,
+    crossFileCalls: CrossFileCall[],
+    log?: (msg: string) => void
+): { graph: WorkflowGraph; addedEdges: number } {
+    const _log = log || console.log;
+
+    if (!crossFileCalls || crossFileCalls.length === 0) {
+        return { graph, addedEdges: 0 };
+    }
+
+    _log(`[CROSS-FILE] Processing ${crossFileCalls.length} cross-file calls`);
+
+    // Build lookup for fuzzy matching
+    const lookup = buildNodeLookup(graph.nodes);
+    const existingEdges = new Set(
+        graph.edges.map(e => `${e.source}::${e.target}`)
+    );
+    const newEdges: WorkflowEdge[] = [];
+
+    for (const call of crossFileCalls) {
+        // Build candidate node IDs
+        const callerRelPath = toRelativePath(call.caller.file);
+        const calleeRelPath = toRelativePath(call.callee.file);
+
+        const callerCandidateId = `${callerRelPath}::${call.caller.function}`;
+        const calleeCandidateId = `${calleeRelPath}::${call.callee.function}`;
+
+        // Try fuzzy matching to find existing nodes
+        const matchedCallerId = findMatchingNodeId(callerCandidateId, lookup);
+        const matchedCalleeId = findMatchingNodeId(calleeCandidateId, lookup);
+
+        // Only create edge if BOTH nodes exist
+        if (matchedCallerId && matchedCalleeId) {
+            const edgeKey = `${matchedCallerId}::${matchedCalleeId}`;
+            if (!existingEdges.has(edgeKey)) {
+                _log(`[CROSS-FILE] Adding edge: ${matchedCallerId} --> ${matchedCalleeId}`);
+                newEdges.push({
+                    source: matchedCallerId,
+                    target: matchedCalleeId,
+                    label: call.callee.module ? `${call.callee.module}.${call.callee.function}()` : undefined
+                });
+                existingEdges.add(edgeKey);
+            }
+        } else {
+            _log(`[CROSS-FILE] Skipped (nodes not found): ${callerCandidateId} --> ${calleeCandidateId}`);
+        }
+    }
+
+    _log(`[CROSS-FILE] Added ${newEdges.length} cross-file edges`);
+
+    return {
+        graph: {
+            ...graph,
+            edges: [...graph.edges, ...newEdges]
+        },
+        addedEdges: newEdges.length
     };
 }

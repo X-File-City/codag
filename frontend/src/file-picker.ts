@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { estimateTokens } from './cost-tracking';
 
 const SELECTION_CACHE_KEY = 'codag.fileSelection';
 
@@ -22,6 +23,7 @@ export interface FileTreeNode {
     depth: number;
     selected: boolean;
     children: FileTreeNode[];
+    tokens?: number;        // Estimated tokens for this file (files only)
 }
 
 /**
@@ -79,17 +81,32 @@ export function getSavedSelectedPaths(context: vscode.ExtensionContext): string[
 
 /**
  * Build a tree structure for the webview file picker
+ * Optionally includes token estimates for cost calculation
  */
-export function buildFileTree(
+export async function buildFileTree(
     files: vscode.Uri[],
-    context: vscode.ExtensionContext
-): { tree: FileTreeNode; totalFiles: number } {
+    context: vscode.ExtensionContext,
+    includeTokens: boolean = true
+): Promise<{ tree: FileTreeNode; totalFiles: number }> {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!workspaceRoot) {
         return { tree: createEmptyRoot(), totalFiles: 0 };
     }
 
     const cache = getSelectionCache(context);
+
+    // Get file sizes for token estimation (batch stat calls)
+    const fileSizes = new Map<string, number>();
+    if (includeTokens) {
+        await Promise.all(files.map(async (file) => {
+            try {
+                const stat = await vscode.workspace.fs.stat(file);
+                fileSizes.set(file.fsPath, stat.size);
+            } catch {
+                fileSizes.set(file.fsPath, 0);
+            }
+        }));
+    }
 
     const root: FileTreeNode = {
         path: workspaceRoot,
@@ -121,13 +138,18 @@ export function buildFileTree(
                     ? (cached !== undefined ? cached.selected : true)
                     : false;
 
+                // Estimate tokens from file size (1 token ≈ 4 bytes for code)
+                const fileSize = fileSizes.get(filePath) || 0;
+                const tokens = isLast ? Math.ceil(fileSize / 4) : undefined;
+
                 child = {
                     path: currentPath,  // Both files and directories get paths
                     name: part,
                     isDirectory: !isLast,
                     depth: i + 1,
                     selected: isSelected,
-                    children: []
+                    children: [],
+                    tokens
                 };
                 current.children.push(child);
             }

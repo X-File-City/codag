@@ -741,9 +741,11 @@ export class CacheManager {
                 const primaryNode = nodes.find(n => nodeIdSet.has(n.id) && n.type === 'llm');
                 const fallbackNode = primaryNode || nodes.find(n => nodeIdSet.has(n.id));
 
-                if (fallbackNode?.source?.function) {
+                const funcName = fallbackNode?.source?.function;
+                // Skip anonymous/lambda function names - use file name instead
+                if (funcName && !funcName.startsWith('anonymous') && funcName !== 'lambda') {
                     // Convert function_name to Title Case
-                    name = fallbackNode.source.function
+                    name = funcName
                         .replace(/_/g, ' ')
                         .replace(/([a-z])([A-Z])/g, '$1 $2')
                         .replace(/\b\w/g, c => c.toUpperCase());

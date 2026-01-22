@@ -163,6 +163,25 @@ export function setupMessageHandler(): void {
 
             case 'updateGraph':
                 if (message.preserveState && message.graph) {
+                    // Log graph update details
+                    const nodeCount = message.graph.nodes?.length || 0;
+                    const edgeCount = message.graph.edges?.length || 0;
+                    console.log(`[WEBVIEW] updateGraph received: ${nodeCount} nodes, ${edgeCount} edges`);
+
+                    // Log HTTP edges in update
+                    const updateHttpEdges = (message.graph.edges || []).filter((e: any) =>
+                        e.label && (e.label.startsWith('POST ') || e.label.startsWith('GET ') ||
+                                   e.label.startsWith('PUT ') || e.label.startsWith('DELETE '))
+                    );
+                    if (updateHttpEdges.length > 0) {
+                        console.log(`[WEBVIEW] HTTP edges in update: ${updateHttpEdges.length}`);
+                        updateHttpEdges.slice(0, 3).forEach((e: any) => {
+                            console.log(`[WEBVIEW]   ${e.source} --[${e.label}]--> ${e.target}`);
+                        });
+                    } else {
+                        console.log('[WEBVIEW] No HTTP edges in update');
+                    }
+
                     // Debounce rapid updates to prevent jitter
                     pendingGraphUpdate = message.graph;
 
@@ -390,6 +409,39 @@ export function setupMessageHandler(): void {
                 getFilePicker().close(false);
 
                 if (message.graph) {
+                    // Log graph details for debugging
+                    const initNodeCount = message.graph.nodes?.length || 0;
+                    const initEdgeCount = message.graph.edges?.length || 0;
+                    console.log(`[WEBVIEW] initGraph received: ${initNodeCount} nodes, ${initEdgeCount} edges`);
+
+                    // Log HTTP edges specifically
+                    const httpEdges = (message.graph.edges || []).filter((e: any) =>
+                        e.label && (e.label.startsWith('POST ') || e.label.startsWith('GET ') ||
+                                   e.label.startsWith('PUT ') || e.label.startsWith('DELETE '))
+                    );
+                    if (httpEdges.length > 0) {
+                        console.log(`[WEBVIEW] HTTP edges found: ${httpEdges.length}`);
+                        httpEdges.slice(0, 5).forEach((e: any) => {
+                            console.log(`[WEBVIEW]   ${e.source} --[${e.label}]--> ${e.target}`);
+                        });
+                        if (httpEdges.length > 5) {
+                            console.log(`[WEBVIEW]   ... and ${httpEdges.length - 5} more`);
+                        }
+                    } else {
+                        console.log('[WEBVIEW] No HTTP edges in graph');
+                    }
+
+                    // Log nodes from api.ts
+                    const apiNodes = (message.graph.nodes || []).filter((n: any) =>
+                        n.source?.file?.includes('api.ts')
+                    );
+                    if (apiNodes.length > 0) {
+                        console.log(`[WEBVIEW] api.ts nodes: ${apiNodes.length}`);
+                        apiNodes.slice(0, 3).forEach((n: any) => {
+                            console.log(`[WEBVIEW]   ${n.id} (${n.type})`);
+                        });
+                    }
+
                     // Update graph data
                     state.setGraphData(message.graph);
 

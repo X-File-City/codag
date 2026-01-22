@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { staticAnalyzer } from './static-analyzer';
-import { CONFIG } from './config';
+import { CONFIG, EXCLUDE_PATTERNS } from './config';
 
 export class WorkflowDetector {
     // LLM Client Detection Patterns
@@ -181,27 +181,8 @@ export class WorkflowDetector {
     private static async buildExcludePattern(workspaceUri: vscode.Uri): Promise<string> {
         const patterns: string[] = [];
 
-        // Common patterns (node_modules, build outputs, virtual environments)
-        const commonExcludes = [
-            '**/node_modules/**',
-            '**/out/**',
-            '**/dist/**',
-            '**/build/**',
-            '**/.next/**',           // Next.js build output
-            '**/.nuxt/**',           // Nuxt build output
-            '**/.vitepress/**',      // VitePress build
-            '**/.docusaurus/**',     // Docusaurus build
-            '**/.svelte-kit/**',     // SvelteKit build
-            '**/.cache/**',          // General cache
-            '**/coverage/**',        // Test coverage
-            '**/.vscode-test/**',
-            '**/venv/**',
-            '**/.venv/**',
-            '**/env/**',
-            '**/__pycache__/**',
-            '**/.ruff_cache/**'
-        ];
-        patterns.push(...commonExcludes);
+        // Use centralized exclude patterns from config
+        patterns.push(...EXCLUDE_PATTERNS);
 
         // Find all .gitignore files in the workspace
         try {

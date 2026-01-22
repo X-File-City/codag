@@ -302,10 +302,16 @@ export class WebviewManager {
         }
 
         // Send file picker message to webview (queued until ready)
+        // Include pricing for cost estimation in file picker
         this.postMessage({
             command: 'showFilePicker',
             tree,
-            totalFiles
+            totalFiles,
+            pricing: {
+                inputPer1M: 0.075,   // Gemini 2.5 Flash input cost
+                outputPer1M: 0.30,   // Gemini 2.5 Flash output cost
+                outputPerFile: 2000  // Estimated output tokens per file
+            }
         });
 
         // Wait for result

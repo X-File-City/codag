@@ -131,25 +131,102 @@ export const ALL_EXTENSIONS = ['.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cj
 
 /**
  * File/directory patterns to exclude from analysis
+ * Based on gitdiagram's aggressive filtering + common patterns
  */
 export const EXCLUDE_PATTERNS = [
+    // Package managers & dependencies
     '**/node_modules/**',
+    '**/vendor/**',
+    '**/bower_components/**',
+    '**/.pnpm/**',
+
+    // Build outputs
     '**/out/**',
     '**/dist/**',
     '**/build/**',
+    '**/target/**',
+    '**/bin/**',
+    '**/obj/**',
+    '**/_build/**',
+
+    // Framework build directories
     '**/.next/**',
     '**/.nuxt/**',
     '**/.vitepress/**',
     '**/.docusaurus/**',
     '**/.svelte-kit/**',
+    '**/.vercel/**',
+    '**/.netlify/**',
+    '**/.turbo/**',
+    '**/.parcel-cache/**',
+
+    // Caches
     '**/.cache/**',
-    '**/coverage/**',
-    '**/.vscode-test/**',
+    '**/__pycache__/**',
+    '**/.ruff_cache/**',
+    '**/.mypy_cache/**',
+    '**/.pytest_cache/**',
+    '**/.tox/**',
+    '**/.nox/**',
+    '**/*.egg-info/**',
+
+    // Virtual environments
     '**/venv/**',
     '**/.venv/**',
     '**/env/**',
-    '**/__pycache__/**',
-    '**/.ruff_cache/**',
+    '**/virtualenv/**',
+    '**/.virtualenv/**',
+
+    // Version control
+    '**/.git/**',
+    '**/.svn/**',
+    '**/.hg/**',
+
+    // IDE/Editor directories
+    '**/.idea/**',
+    '**/.vscode/**',
+    '**/.vscode-test/**',
+    '**/.vs/**',
+    '**/*.xcodeproj/**',
+    '**/*.xcworkspace/**',
+
+    // Test coverage
+    '**/coverage/**',
+    '**/htmlcov/**',
+    '**/.nyc_output/**',
+
+    // Test directories (usually not part of main workflow)
+    '**/__tests__/**',
+    '**/test/**',
+    '**/tests/**',
+    '**/spec/**',
+    '**/__mocks__/**',
+    '**/fixtures/**',
+
+    // Generated/compiled files
+    '**/*.min.js',
+    '**/*.min.css',
+    '**/*.map',
+    '**/*.d.ts',
+
+    // Documentation
+    '**/docs/**',
+    '**/doc/**',
+    '**/documentation/**',
+
+    // Logs
+    '**/logs/**',
+    '**/log/**',
+    '**/*.log',
+
+    // Temporary files
+    '**/tmp/**',
+    '**/temp/**',
+    '**/.tmp/**',
+
+    // Migrations (usually boilerplate)
+    '**/migrations/**',
+    '**/alembic/**',
 ] as const;
 
 /**

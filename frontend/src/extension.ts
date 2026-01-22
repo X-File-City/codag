@@ -18,10 +18,10 @@ import { extractCallGraph, diffCallGraphs, ExtractedCallGraph } from './call-gra
 import { applyLocalUpdate, createGraphFromCallGraph, LocalUpdateResult } from './local-graph-updater';
 import { getMetadataBatcher, buildMetadataContext, MetadataContext } from './metadata-batcher';
 import { extractRepoStructure, formatStructureForLLM, formatHttpConnectionsForPrompt, RawRepoStructure, FileStructure } from './repo-structure';
-import { resolveExternalEdges, logResolutionStats } from './edge-resolver';
+import { resolveExternalEdges, logResolutionStats, addHttpConnectionEdges, addCrossFileCallEdges } from './edge-resolver';
 
 // Cost tracking
-import { estimateTokens, calculateCost, formatCost, CostAggregator, displayCostReport } from './cost-tracking';
+import { estimateTokens, calculateCost, formatCost, CostAggregator, displayCostReport, estimateAnalysisCost } from './cost-tracking';
 
 // File preparation
 import { formatFileXML, combineFilesXML, createDependencyBatches, FileContent } from './file-preparation';
@@ -39,6 +39,41 @@ function log(message: string): void {
     const seconds = now.getSeconds().toString().padStart(2, '0');
     const timestamp = `${hours}:${minutes}:${seconds}`;
     outputChannel.appendLine(`[${timestamp}] ${message}`);
+}
+
+// Module-level storage for static analysis results (persists across display calls)
+import { HttpConnection, CrossFileCall } from './repo-structure';
+let currentHttpConnections: HttpConnection[] = [];
+let currentCrossFileCalls: CrossFileCall[] = [];
+
+/**
+ * Add statically-detected edges (HTTP connections + cross-file calls) to a graph.
+ * This should be called before ANY graph display to ensure static edges are included.
+ */
+function withHttpEdges(graph: WorkflowGraph | null): WorkflowGraph | null {
+    if (!graph) return null;
+
+    let result = graph;
+
+    // Add HTTP connection edges
+    if (currentHttpConnections.length > 0) {
+        const httpResult = addHttpConnectionEdges(result, currentHttpConnections, log);
+        if (httpResult.addedEdges > 0 || httpResult.addedNodes > 0) {
+            log(`[HTTP] Added ${httpResult.addedEdges} edges, ${httpResult.addedNodes} nodes`);
+        }
+        result = httpResult.graph;
+    }
+
+    // Add cross-file call edges
+    if (currentCrossFileCalls.length > 0) {
+        const callResult = addCrossFileCallEdges(result, currentCrossFileCalls, log);
+        if (callResult.addedEdges > 0) {
+            log(`[CROSS-FILE] Added ${callResult.addedEdges} edges`);
+        }
+        result = callResult.graph;
+    }
+
+    return result;
 }
 
 /**
@@ -522,8 +557,8 @@ export async function activate(context: vscode.ExtensionContext) {
                     // Local update succeeded
                     if (localResult.nodesAdded.length > 0 || localResult.nodesRemoved.length > 0 ||
                         localResult.edgesAdded > 0 || localResult.edgesRemoved > 0) {
-                        // Update graph in webview
-                        webview.updateGraph(localResult.graph);
+                        // Update graph in webview (with HTTP edges)
+                        webview.updateGraph(withHttpEdges(localResult.graph)!);
                         log(`Graph updated locally (instant) via tree-sitter`);
 
                         // Queue for metadata if new nodes need labels
@@ -758,7 +793,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 log(`Using cached result for ${filePath}`);
             }
 
-            webview.show(graph);
+            webview.show(withHttpEdges(graph)!);
         } catch (error: any) {
             log(`ERROR: ${error.message}`);
             log(`Status: ${error.response?.status}`);
@@ -854,11 +889,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
             log(`Analyzing ${fileContents.length} files...`);
 
-            // Extract HTTP connections for cross-service edge detection
+            // Extract HTTP connections and cross-file calls for static edge detection
             const rawHttpStructure = extractRepoStructure(fileContents);
+            currentHttpConnections = rawHttpStructure.httpConnections;
+            currentCrossFileCalls = rawHttpStructure.crossFileCalls || [];
             const httpConnectionsContext = formatHttpConnectionsForPrompt(rawHttpStructure);
             if (rawHttpStructure.httpConnections.length > 0) {
                 log(`Found ${rawHttpStructure.httpConnections.length} HTTP connection(s)`);
+            }
+            if (currentCrossFileCalls.length > 0) {
+                log(`Found ${currentCrossFileCalls.length} cross-file call(s)`);
             }
 
             // Build metadata
@@ -955,7 +995,7 @@ export async function activate(context: vscode.ExtensionContext) {
                                 try {
                                     const currentMerged = await cache.getMergedGraph();
                                     if (currentMerged && currentMerged.nodes.length > 0) {
-                                        webview.updateGraph(currentMerged);
+                                        webview.updateGraph(withHttpEdges(currentMerged)!);
                                     }
                                 } catch (updateError: any) {
                                     log(`Warning: Incremental update failed: ${updateError.message}`);
@@ -990,7 +1030,7 @@ export async function activate(context: vscode.ExtensionContext) {
             const mergedGraph = await cache.getMergedGraph(selectedPaths);
 
             if (mergedGraph && mergedGraph.nodes.length > 0) {
-                webview.show(mergedGraph);
+                webview.show(withHttpEdges(mergedGraph)!);
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
                 log(`✓ Analysis complete in ${elapsed}s: ${mergedGraph.nodes.length} nodes, ${mergedGraph.edges.length} edges`);
                 const totalTokens = totalInputTokens + totalOutputTokens;
@@ -1090,6 +1130,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
             const rawHttpStructure = extractRepoStructure(allFilesForHttpExtraction);
             const allHttpConnections = rawHttpStructure.httpConnections;
+            currentHttpConnections = allHttpConnections;
+            currentCrossFileCalls = rawHttpStructure.crossFileCalls || [];
             pipelineStats.analyzed.httpConnections = allHttpConnections.length;
             pipelineStats.detected.httpFiles = httpSourceContents.length;
             // Format HTTP connections for inclusion in LLM prompt
@@ -1247,7 +1289,7 @@ export async function activate(context: vscode.ExtensionContext) {
                             log(`✓ All ${fileContents.length} files up to date`);
                             const selectedPaths = fileContents.map(f => f.path);
                             const mergedGraph = await cache.getMergedGraph(selectedPaths);
-                            webview.show(mergedGraph!);
+                            webview.show(withHttpEdges(mergedGraph)!);
                             return;
                         }
 
@@ -1261,13 +1303,31 @@ export async function activate(context: vscode.ExtensionContext) {
                         const allCached = await cache.getMergedGraph();
                         if (allCached && allCached.nodes.length > 0) {
                             log(`Showing ${allCached.nodes.length} cached nodes while analyzing ${uncachedCount} more...`);
-                            webview.show(allCached, { loading: true });
+                            webview.show(withHttpEdges(allCached)!, { loading: true });
                         } else {
                             log(`No cached graphs to show, showing loading...`);
                             webview.showLoading(`Analyzing ${uncachedCount} file${uncachedCount !== 1 ? 's' : ''}...`);
                         }
 
                         const filesToAnalyze = cacheResult.uncached;
+
+                        // Show cost estimate for significant analyses
+                        const costEstimate = estimateAnalysisCost(filesToAnalyze);
+                        log(`Cost estimate: ~${Math.round(costEstimate.inputTokens / 1000)}k input = ${costEstimate.formattedCost}`);
+
+                        if (costEstimate.estimatedCost > 0.01) {
+                            const proceed = await vscode.window.showInformationMessage(
+                                `Analyze ${filesToAnalyze.length} file(s)? Estimated cost: ${costEstimate.formattedCost}`,
+                                { modal: false },
+                                'Analyze',
+                                'Cancel'
+                            );
+                            if (proceed !== 'Analyze') {
+                                log('Analysis cancelled by user');
+                                return;
+                            }
+                        }
+
                         const uncachedUris = filesToAnalyze.map(f => vscode.Uri.file(f.path));
                         const metadata = await metadataBuilder.buildMetadata(uncachedUris);
 
@@ -1338,7 +1398,7 @@ export async function activate(context: vscode.ExtensionContext) {
                                         try {
                                             const currentMerged = await cache.getMergedGraph();
                                             if (currentMerged && currentMerged.nodes.length > 0) {
-                                                webview.updateGraph(currentMerged);
+                                                webview.updateGraph(withHttpEdges(currentMerged)!);
                                             }
                                         } catch (updateError: any) {
                                             log(`Warning: Incremental update failed: ${updateError.message}`);
@@ -1393,7 +1453,7 @@ export async function activate(context: vscode.ExtensionContext) {
                         const allSelectedPaths = fileContents.map(f => f.path);
                         const finalMerged = await cache.getMergedGraph(allSelectedPaths);
                         if (finalMerged) {
-                            webview.updateGraph(finalMerged);
+                            webview.updateGraph(withHttpEdges(finalMerged)!);
                         }
 
                         webview.notifyAnalysisComplete(true);
@@ -1407,7 +1467,7 @@ export async function activate(context: vscode.ExtensionContext) {
             if (hasCachedData) {
                 const cachedGraph = await cache.getMergedGraph();
                 if (cachedGraph) {
-                    webview.show(cachedGraph);
+                    webview.show(withHttpEdges(cachedGraph)!);
                     log(`✓ Displayed cached graph behind file picker`);
                 }
             }
@@ -1415,8 +1475,8 @@ export async function activate(context: vscode.ExtensionContext) {
             // Get ALL source files for the picker (shows all files, not just LLM)
             const allSourceFiles = await WorkflowDetector.getAllSourceFiles();
 
-            // Build file tree with all source files
-            const { tree, totalFiles } = buildFileTree(allSourceFiles, context);
+            // Build file tree with all source files (includes token estimates for cost)
+            const { tree, totalFiles } = await buildFileTree(allSourceFiles, context);
 
             // Show file picker immediately
             const selectedPaths = await webview.showFilePicker(tree, totalFiles);
@@ -1471,10 +1531,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
             // Show cached graphs for selected files (closes file picker and displays)
             if (cachedPaths.length > 0) {
-                const cachedGraph = await cache.getMergedGraph(cachedPaths);
+                let cachedGraph = await cache.getMergedGraph(cachedPaths);
                 if (cachedGraph) {
-                    webview.initGraph(cachedGraph);
-                    log(`✓ Displayed cached graph (${cachedGraph.nodes.length} nodes, ${cachedGraph.edges.length} edges)`);
+                    const graphWithHttp = withHttpEdges(cachedGraph)!;
+                    webview.initGraph(graphWithHttp);
+                    log(`✓ Displayed cached graph (${graphWithHttp.nodes.length} nodes, ${graphWithHttp.edges.length} edges)`);
                 }
             } else {
                 // For fresh repos with no cached graphs, close file picker immediately
@@ -1488,6 +1549,24 @@ export async function activate(context: vscode.ExtensionContext) {
             // HTTP connections already extracted earlier from ALL source files (allHttpConnections)
 
             if (filesToAnalyze.length > 0) {
+                    // Show cost estimate and get user confirmation
+                    const costEstimate = estimateAnalysisCost(filesToAnalyze);
+                    log(`\nCost estimate: ~${Math.round(costEstimate.inputTokens / 1000)}k input + ~${Math.round(costEstimate.outputTokens / 1000)}k output = ${costEstimate.formattedCost}`);
+
+                    // Only show confirmation for non-trivial analysis (> $0.01)
+                    if (costEstimate.estimatedCost > 0.01) {
+                        const proceed = await vscode.window.showInformationMessage(
+                            `Analyze ${filesToAnalyze.length} file(s)? Estimated cost: ${costEstimate.formattedCost}`,
+                            { modal: false },
+                            'Analyze',
+                            'Cancel'
+                        );
+                        if (proceed !== 'Analyze') {
+                            log('Analysis cancelled by user');
+                            return;
+                        }
+                    }
+
                     // Analyze uncached files in batches
                     webview.notifyAnalysisStarted();
 
@@ -1600,7 +1679,7 @@ export async function activate(context: vscode.ExtensionContext) {
                                             try {
                                                 const currentMerged = await cache.getMergedGraph();
                                                 if (currentMerged && currentMerged.nodes.length > 0) {
-                                                    webview.updateGraph(currentMerged);
+                                                    webview.updateGraph(withHttpEdges(currentMerged)!);
                                                 }
                                             } catch (updateError: any) {
                                                 log(`Warning: Incremental update failed: ${updateError.message}`);
@@ -1849,7 +1928,6 @@ export async function activate(context: vscode.ExtensionContext) {
             let graph = await cache.getMergedGraph();
 
             // Resolve cross-batch edge references (file:function → actual node IDs)
-            // HTTP connection edges are now produced by the LLM, so they're included in analysis results
             if (graph && graph.edges.length > 0) {
                 pipelineStats.edges.llmGenerated = graph.edges.length;
                 const resolution = resolveExternalEdges(graph);
@@ -1858,6 +1936,8 @@ export async function activate(context: vscode.ExtensionContext) {
                 pipelineStats.edges.orphaned = resolution.unresolved.length;
                 logResolutionStats(resolution.resolved, resolution.unresolved, log);
             }
+
+            // HTTP connection edges are added via withHttpEdges() at display time
 
             // Count nodes and files in final graph
             if (graph) {
@@ -1892,6 +1972,13 @@ export async function activate(context: vscode.ExtensionContext) {
             }
             pipelineStats.edges.orphaned += orphanedEdgesRemoved;
 
+            // Notify user about unresolved cross-file connections
+            if (pipelineStats.edges.orphaned > 0) {
+                webview.notifyWarning(
+                    `${pipelineStats.edges.orphaned} cross-file connection(s) could not be resolved. Some workflow paths may be incomplete.`
+                );
+            }
+
             // Log pipeline summary
             log(`\n${'═'.repeat(50)}`);
             log(`PIPELINE SUMMARY`);
@@ -1915,7 +2002,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
             // Single show() at end with complete graph (no loading indicator)
             if (graph) {
-                webview.show(graph);
+                webview.show(withHttpEdges(graph)!);
             }
         } catch (error: any) {
             // Handle trial quota exhaustion - store task for retry after login
@@ -1964,7 +2051,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
             // Show cached graph immediately with loading indicator
             if (cachedGraph && cachedGraph.nodes.length > 0) {
-                webview.show(cachedGraph, { loading: true });
+                webview.show(withHttpEdges(cachedGraph)!, { loading: true });
             } else {
                 webview.showLoading(`Updating ${vscode.workspace.asRelativePath(filePath)}...`);
             }
@@ -1999,7 +2086,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
             // Update webview with merged graph
             if (mergedGraph) {
-                webview.show(mergedGraph);
+                webview.show(withHttpEdges(mergedGraph)!);
                 webview.notifyAnalysisComplete(true);
                 const duration = Date.now() - startTime;
                 const seconds = (duration / 1000).toFixed(1);
@@ -2042,8 +2129,8 @@ export async function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            // Build file tree and show picker immediately
-            const { tree, totalFiles } = buildFileTree(allFiles, context);
+            // Build file tree and show picker immediately (includes token estimates)
+            const { tree, totalFiles } = await buildFileTree(allFiles, context);
             const selectedPaths = await webview.showFilePicker(tree, totalFiles);
 
             if (!selectedPaths || selectedPaths.length === 0) {
@@ -2068,8 +2155,10 @@ export async function activate(context: vscode.ExtensionContext) {
             );
             const fileContents = fileReadResults.filter((f): f is { path: string; content: string } => f !== null);
 
-            // Extract HTTP connections for cross-service edge detection
+            // Extract HTTP connections and cross-file calls for static edge detection
             const rawHttpStructure = extractRepoStructure(fileContents);
+            currentHttpConnections = rawHttpStructure.httpConnections;
+            currentCrossFileCalls = rawHttpStructure.crossFileCalls || [];
             const httpConnectionsContext = formatHttpConnectionsForPrompt(rawHttpStructure);
 
             // Check cache
@@ -2079,9 +2168,10 @@ export async function activate(context: vscode.ExtensionContext) {
 
             if (cacheResult.cached.length > 0) {
                 const cachedPaths = cacheResult.cached.map(f => f.path);
-                const cachedGraph = await cache.getMergedGraph(cachedPaths);
+                let cachedGraph = await cache.getMergedGraph(cachedPaths);
                 if (cachedGraph) {
-                    webview.initGraph(cachedGraph);
+                    // Add HTTP connection edges
+                    webview.initGraph(withHttpEdges(cachedGraph)!);
                 }
             }
 
@@ -2173,7 +2263,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 // Final merge and completion
                 const mergedGraph = await cache.getMergedGraph(allFilePaths);
                 if (mergedGraph) {
-                    webview.updateGraph(mergedGraph);
+                    webview.updateGraph(withHttpEdges(mergedGraph)!);
                 }
                 webview.notifyAnalysisComplete(true);
             }
