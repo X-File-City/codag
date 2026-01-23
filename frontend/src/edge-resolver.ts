@@ -460,6 +460,121 @@ export function addHttpConnectionEdges(
 }
 
 /**
+ * Add edges from frontend callers to HTTP client functions.
+ * This completes the chain: frontend_caller → api.ts::httpMethod → backend handler
+ *
+ * @param graph - Graph that already has HTTP client nodes (from addHttpConnectionEdges)
+ * @param httpConnections - HTTP connections detected
+ * @param repoStructure - Repo structure with function call information
+ * @param log - Logger function
+ */
+export function addHttpCallerEdges(
+    graph: WorkflowGraph,
+    httpConnections: HttpConnection[],
+    repoFiles: { path: string; functions: { name: string; calls: string[]; line: number }[] }[],
+    log?: (msg: string) => void
+): { graph: WorkflowGraph; addedEdges: number; addedNodes: number } {
+    const _log = log || console.log;
+
+    if (!httpConnections || httpConnections.length === 0 || !repoFiles || repoFiles.length === 0) {
+        return { graph, addedEdges: 0, addedNodes: 0 };
+    }
+
+    _log(`[HTTP-CALLERS] Searching for callers of ${httpConnections.length} HTTP client functions`);
+
+    let lookup = buildNodeLookup(graph.nodes);
+    const existingEdges = new Set(graph.edges.map(e => `${e.source}::${e.target}`));
+    const existingNodeIds = new Set(graph.nodes.map(n => n.id));
+    const newEdges: WorkflowEdge[] = [];
+    const newNodes: WorkflowNode[] = [];
+
+    // Build a set of HTTP client function names to look for
+    const httpClientFunctions = new Map<string, string>(); // funcName → nodeId
+    for (const conn of httpConnections) {
+        const clientRelPath = toRelativePath(conn.client.file);
+        const clientNodeId = `${clientRelPath}::${conn.client.function}`;
+        // Try to find the actual node ID (might be fuzzy matched)
+        const matchedId = findMatchingNodeId(clientNodeId, lookup) || clientNodeId;
+        httpClientFunctions.set(conn.client.function, matchedId);
+        // Also add variations (e.g., "api.analyzeWorkflow" → "analyzeWorkflow")
+        httpClientFunctions.set(`api.${conn.client.function}`, matchedId);
+        httpClientFunctions.set(`this.api.${conn.client.function}`, matchedId);
+    }
+
+    _log(`[HTTP-CALLERS] Looking for calls to: ${[...httpClientFunctions.keys()].join(', ')}`);
+
+    // Search all functions for calls to HTTP client functions
+    for (const file of repoFiles) {
+        const fileRelPath = toRelativePath(file.path);
+
+        for (const func of file.functions) {
+            for (const call of func.calls) {
+                // Check if this call matches any HTTP client function
+                // Handle patterns like: api.analyzeWorkflow, this.api.analyzeWorkflow, analyzeWorkflow
+                const callParts = call.split('.');
+                const funcName = callParts[callParts.length - 1];
+
+                // Check direct match or with api prefix
+                const targetNodeId = httpClientFunctions.get(call) ||
+                                   httpClientFunctions.get(funcName) ||
+                                   httpClientFunctions.get(`api.${funcName}`);
+
+                if (targetNodeId) {
+                    const callerNodeId = `${fileRelPath}::${func.name}`;
+                    let matchedCallerId = findMatchingNodeId(callerNodeId, lookup);
+
+                    // If caller node doesn't exist, create it
+                    if (!matchedCallerId && !existingNodeIds.has(callerNodeId)) {
+                        _log(`[HTTP-CALLERS] Creating caller node: ${callerNodeId}`);
+                        const newNode: WorkflowNode = {
+                            id: callerNodeId,
+                            label: func.name,
+                            type: 'step',
+                            description: `Calls ${funcName}()`,
+                            source: {
+                                file: file.path,
+                                line: func.line,
+                                function: func.name
+                            }
+                        };
+                        newNodes.push(newNode);
+                        existingNodeIds.add(callerNodeId);
+                        matchedCallerId = callerNodeId;
+                        // Rebuild lookup with new node
+                        lookup = buildNodeLookup([...graph.nodes, ...newNodes]);
+                    }
+
+                    if (matchedCallerId) {
+                        const edgeKey = `${matchedCallerId}::${targetNodeId}`;
+                        if (!existingEdges.has(edgeKey)) {
+                            _log(`[HTTP-CALLERS] Adding edge: ${matchedCallerId} --> ${targetNodeId}`);
+                            newEdges.push({
+                                source: matchedCallerId,
+                                target: targetNodeId,
+                                label: `${funcName}()`
+                            });
+                            existingEdges.add(edgeKey);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    _log(`[HTTP-CALLERS] Added ${newNodes.length} nodes, ${newEdges.length} edges`);
+
+    return {
+        graph: {
+            ...graph,
+            nodes: [...graph.nodes, ...newNodes],
+            edges: [...graph.edges, ...newEdges]
+        },
+        addedEdges: newEdges.length,
+        addedNodes: newNodes.length
+    };
+}
+
+/**
  * Add cross-file function call edges to the graph.
  * These are statically detected calls between files (e.g., main.py calling gemini_client.py).
  * Uses fuzzy path matching to connect to existing nodes.

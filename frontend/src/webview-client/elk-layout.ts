@@ -22,9 +22,9 @@ const DEFAULT_LAYOUT_OPTIONS: Record<string, string> = {
 
     // Edge routing - ORTHOGONAL for square edges that avoid nodes
     'elk.edgeRouting': 'ORTHOGONAL',
-    'elk.layered.spacing.edgeNodeBetweenLayers': '25',  // Space between edges and nodes vertically
-    'elk.layered.spacing.edgeEdgeBetweenLayers': '15',  // Vertical spacing between parallel edges
-    'elk.spacing.edgeEdge': '15',                        // Horizontal spacing between parallel edges
+    'elk.layered.spacing.edgeNodeBetweenLayers': '30',  // Space between edges and nodes vertically
+    'elk.layered.spacing.edgeEdgeBetweenLayers': '25',  // Vertical spacing between parallel edges (room for labels)
+    'elk.spacing.edgeEdge': '25',                        // Horizontal spacing between parallel edges
     'elk.spacing.edgeNode': '20',                        // Minimum edge-to-node distance
 
     // Crossing minimization - reduce edge overlaps
@@ -38,8 +38,11 @@ const DEFAULT_LAYOUT_OPTIONS: Record<string, string> = {
     // Layering strategy
     'elk.layered.layering.strategy': 'NETWORK_SIMPLEX',
 
-    // Edge label placement
+    // Edge label placement - let ELK handle label positioning
     'elk.edgeLabels.inline': 'true',
+    'elk.edgeLabels.placement': 'CENTER',
+    'elk.spacing.labelLabel': '8',           // Min space between labels
+    'elk.spacing.labelNode': '5',            // Min space label-to-node
 
     // DO NOT merge edges - keep them separate like circuit traces
     'elk.layered.mergeEdges': 'false',
@@ -52,6 +55,7 @@ const DEFAULT_LAYOUT_OPTIONS: Record<string, string> = {
 export interface LayoutResult {
     positions: Map<string, { x: number; y: number }>;
     edgeRoutes: Map<string, EdgeRoute>;
+    labelPositions: Map<string, { x: number; y: number }>;
 }
 
 export interface EdgeRoute {
@@ -60,12 +64,26 @@ export interface EdgeRoute {
     bendPoints: { x: number; y: number }[];
 }
 
+export interface EdgeInput {
+    source: string;
+    target: string;
+    id?: string;
+    label?: string;
+}
+
+// Estimate label width based on character count
+function estimateLabelWidth(label: string): number {
+    return Math.max(40, label.length * 7 + 16);
+}
+
+const LABEL_HEIGHT = 18;
+
 /**
  * Layout nodes and edges using ELK
  */
 export async function layoutWithELK(
     nodes: Array<{ id: string; width: number; height: number }>,
-    edges: Array<{ source: string; target: string; id?: string }>,
+    edges: EdgeInput[],
     options?: Record<string, string>
 ): Promise<LayoutResult> {
     const layoutOptions = { ...DEFAULT_LAYOUT_OPTIONS, ...options };
@@ -78,11 +96,24 @@ export async function layoutWithELK(
             width: n.width,
             height: n.height,
         })),
-        edges: edges.map((e, i) => ({
-            id: e.id || `e${i}`,
-            sources: [e.source],
-            targets: [e.target],
-        })),
+        edges: edges.map((e, i) => {
+            const edgeId = e.id || `e${i}`;
+            const elkEdge: any = {
+                id: edgeId,
+                sources: [e.source],
+                targets: [e.target],
+            };
+            // Add label for ELK to position
+            if (e.label) {
+                elkEdge.labels = [{
+                    id: `${edgeId}_label`,
+                    text: e.label,
+                    width: estimateLabelWidth(e.label),
+                    height: LABEL_HEIGHT,
+                }];
+            }
+            return elkEdge;
+        }),
     };
 
     const result = await elk.layout(graph);
@@ -100,9 +131,9 @@ export async function layoutWithELK(
         positions.set(child.id, { x: centerX, y: centerY });
     }
 
-    // Extract edge routes from ELK (apply same margin offset)
-    // ELK-ONLY: No fallback generation
+    // Extract edge routes and label positions from ELK
     const edgeRoutes = new Map<string, EdgeRoute>();
+    const labelPositions = new Map<string, { x: number; y: number }>();
 
     for (const edge of (result.edges || []) as ElkExtendedEdge[]) {
         const section = edge.sections?.[0];
@@ -113,9 +144,22 @@ export async function layoutWithELK(
                 bendPoints: (section.bendPoints || []).map(bp => ({ x: bp.x + MARGIN, y: bp.y + MARGIN })),
             });
         }
+
+        // Extract label position if present
+        const labels = (edge as any).labels;
+        if (labels && labels.length > 0) {
+            const label = labels[0];
+            if (typeof label.x === 'number' && typeof label.y === 'number') {
+                // ELK returns top-left of label, convert to center
+                labelPositions.set(edge.id, {
+                    x: label.x + (label.width || 0) / 2 + MARGIN,
+                    y: label.y + (label.height || 0) / 2 + MARGIN,
+                });
+            }
+        }
     }
 
-    return { positions, edgeRoutes };
+    return { positions, edgeRoutes, labelPositions };
 }
 
 /**

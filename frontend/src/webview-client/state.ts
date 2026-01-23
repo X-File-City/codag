@@ -53,6 +53,9 @@ export let expandedNodes: any[] = [];
 // ELK edge routes: edgeId -> EdgeRoute
 export let elkEdgeRoutes: Map<string, EdgeRoute> = new Map();
 
+// ELK label positions: edgeId -> { x, y } center position
+export let elkLabelPositions: Map<string, { x: number; y: number }> = new Map();
+
 // Containers
 export let groupContainer: any = null;
 export let collapsedGroupContainer: any = null;
@@ -224,4 +227,14 @@ export function setElkEdgeRoutes(routes: Map<string, EdgeRoute>): void {
 // Get ELK edge route for an edge
 export function getElkEdgeRoute(edgeId: string): EdgeRoute | undefined {
     return elkEdgeRoutes.get(edgeId);
+}
+
+// Set ELK label positions
+export function setElkLabelPositions(positions: Map<string, { x: number; y: number }>): void {
+    elkLabelPositions = positions;
+}
+
+// Get ELK label position for an edge
+export function getElkLabelPosition(edgeId: string): { x: number; y: number } | undefined {
+    return elkLabelPositions.get(edgeId);
 }

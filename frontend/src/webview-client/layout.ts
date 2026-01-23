@@ -4,7 +4,7 @@ import { snapToGrid, getNodeWorkflowCount, getVirtualNodeId } from './utils';
 import { createWorkflowPattern } from './setup';
 import { measureNodeDimensions } from './helpers';
 import { measureTextWidth } from './groups';
-import { layoutWithELK, EdgeRoute } from './elk-layout';
+import { layoutWithELK, EdgeRoute, EdgeInput } from './elk-layout';
 import {
     NODE_WIDTH, NODE_HEIGHT,
     WORKFLOW_SPACING,
@@ -92,8 +92,8 @@ export async function layoutWorkflows(defs: any): Promise<void> {
             elkNodes.push({ id: node.id, width: node.width, height: node.height });
         });
 
-        // Prepare edges for ELK layout
-        const elkEdges: Array<{ source: string; target: string; id: string }> = [];
+        // Prepare edges for ELK layout (include labels for proper spacing)
+        const elkEdges: EdgeInput[] = [];
         const seenEdges = new Set<string>();
         currentGraphData.edges.forEach((edge: any) => {
             if (group.nodes.includes(edge.source) && group.nodes.includes(edge.target)) {
@@ -103,14 +103,15 @@ export async function layoutWorkflows(defs: any): Promise<void> {
                     elkEdges.push({
                         source: edge.source,
                         target: edge.target,
-                        id: `${group.id}_${edgeKey}`
+                        id: `${group.id}_${edgeKey}`,
+                        label: edge.label || undefined,  // Pass label for ELK positioning
                     });
                 }
             }
         });
 
         // Run ELK layout
-        const { positions: elkPositions, edgeRoutes } = await layoutWithELK(elkNodes, elkEdges);
+        const { positions: elkPositions, edgeRoutes, labelPositions } = await layoutWithELK(elkNodes, elkEdges);
 
         // Store LOCAL positions (no global offset yet)
         const localPositions = new Map<string, { x: number; y: number }>();
@@ -166,6 +167,7 @@ export async function layoutWorkflows(defs: any): Promise<void> {
             nodes: allGroupNodes,
             localPositions,
             localEdgeRoutes: edgeRoutes,  // Store for transformation in PASS 3
+            localLabelPositions: labelPositions,  // Store label positions for transformation
             width,
             height,
             offsetX: 0,
@@ -178,6 +180,7 @@ export async function layoutWorkflows(defs: any): Promise<void> {
 
     // Will be populated in PASS 3 after transformation
     const allElkEdgeRoutes = new Map<string, EdgeRoute>();
+    const allLabelPositions = new Map<string, { x: number; y: number }>();
 
     // ========== PASS 2: Radial corner-packing layout ==========
     if (layoutData.length > 0) {
@@ -295,7 +298,7 @@ export async function layoutWorkflows(defs: any): Promise<void> {
 
     // ========== PASS 3: Apply global offsets and finalize positions ==========
     layoutData.forEach((data) => {
-        const { group, nodes, localPositions, localEdgeRoutes, offsetX, offsetY, components, localBoundsMinX, localBoundsMinY } = data;
+        const { group, nodes, localPositions, localEdgeRoutes, localLabelPositions, offsetX, offsetY, components, localBoundsMinX, localBoundsMinY } = data;
 
         // Apply offset to ALL node positions
         // Normalize by subtracting localBounds origin so positions start at (0,0)
@@ -321,16 +324,22 @@ export async function layoutWorkflows(defs: any): Promise<void> {
         });
 
         // Transform edge routes with same offset as nodes
+        const transformPoint = (p: { x: number; y: number }) => ({
+            x: p.x - localBoundsMinX + offsetX,
+            y: p.y - localBoundsMinY + offsetY
+        });
+
         localEdgeRoutes.forEach((route, edgeId) => {
-            const transformPoint = (p: { x: number; y: number }) => ({
-                x: p.x - localBoundsMinX + offsetX,
-                y: p.y - localBoundsMinY + offsetY
-            });
             allElkEdgeRoutes.set(edgeId, {
                 startPoint: transformPoint(route.startPoint),
                 endPoint: transformPoint(route.endPoint),
                 bendPoints: route.bendPoints.map(transformPoint)
             });
+        });
+
+        // Transform label positions with same offset
+        localLabelPositions.forEach((pos, edgeId) => {
+            allLabelPositions.set(edgeId, transformPoint(pos));
         });
 
         // Calculate component bounds from their actual node positions
@@ -386,6 +395,7 @@ export async function layoutWorkflows(defs: any): Promise<void> {
 
     state.setOriginalPositions(originalPositions);
     state.setElkEdgeRoutes(allElkEdgeRoutes);
+    state.setElkLabelPositions(allLabelPositions);
 
     // Build a map of which nodes are in collapsed components
     const nodesInCollapsedComponents = new Set<string>();

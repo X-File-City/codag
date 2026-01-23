@@ -376,7 +376,7 @@ function renderEdgeLabels(edges: any[]): void {
         .append('g')
         .attr('class', 'edge-label')
         .attr('transform', (d: any) => {
-            // Use ELK route for label position (ELK-only)
+            // Position label ON the edge path (from route geometry)
             const elkRoute = findElkEdgeRoute(
                 d._originalSource || d.source,
                 d._originalTarget || d.target,
@@ -386,7 +386,6 @@ function renderEdgeLabels(edges: any[]): void {
                 const pos = getLabelPositionFromRoute(elkRoute);
                 return `translate(${pos.x}, ${pos.y})`;
             }
-            // No route = no label position (hidden at origin)
             return 'translate(0, 0)';
         });
 
@@ -518,7 +517,7 @@ export function updateEdgeLabels(transitionDuration: number = 0): void {
     if (!edgeLabelGroups || edgesWithLabels.length === 0) return;
 
     const computeTransform = (d: any) => {
-        // Use ELK route for label position
+        // Position label ON the edge path
         const elkRoute = findElkEdgeRoute(
             d._originalSource || d.source,
             d._originalTarget || d.target,
@@ -774,6 +773,7 @@ function updateEdgeLabelsIncremental(edges: any[]): void {
     const allLabels = labelSelection.merge(enterLabels);
 
     allLabels.attr('transform', (d: any) => {
+        // Position label ON the edge path
         const elkRoute = findElkEdgeRoute(
             d._originalSource || d.source,
             d._originalTarget || d.target,
