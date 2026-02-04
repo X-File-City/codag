@@ -1,8 +1,7 @@
 // Node rendering
 import * as state from './state';
-import { sharedIcon } from './icons';
 import { NODE_WIDTH, NODE_HEIGHT, NODE_BORDER_RADIUS } from './constants';
-import { intersectRect, intersectDiamond, colorFromString } from './utils';
+import { colorFromString, escapeNodeIdForCSS } from './utils';
 
 declare const d3: any;
 
@@ -11,14 +10,10 @@ export function renderNodes(
     dragged: (event: any, d: any) => void,
     dragended: (event: any, d: any) => void
 ): void {
-    const { g, expandedNodes, sharedNodeCopies } = state;
+    const { g, expandedNodes } = state;
 
-    // Use expanded nodes from layout (already includes virtual copies for shared nodes)
+    // Use expanded nodes from layout
     const nodesToRender = expandedNodes;
-
-    // Create container for shared copy arrows BEFORE nodes (so arrows render below)
-    const sharedArrowsContainer = g.append('g').attr('class', 'shared-arrows-container');
-    state.setSharedArrowsContainer(sharedArrowsContainer);
 
     // Create nodes
     const node = g.append('g')
@@ -47,6 +42,16 @@ export function renderNodes(
             const hexPath = `M ${-w/2 + indent} ${-h/2} L ${w/2 - indent} ${-h/2} L ${w/2} 0 L ${w/2 - indent} ${h/2} L ${-w/2 + indent} ${h/2} L ${-w/2} 0 Z`;
             group.append('path')
                 .attr('d', hexPath)
+                .style('fill', 'var(--vscode-editor-background)')
+                .style('stroke', 'none');
+        } else if (d.type === 'reference') {
+            // Reference node: simple background (purple border added separately)
+            group.append('rect')
+                .attr('width', w)
+                .attr('height', h)
+                .attr('x', -w / 2)
+                .attr('y', -h / 2)
+                .attr('rx', NODE_BORDER_RADIUS)
                 .style('fill', 'var(--vscode-editor-background)')
                 .style('stroke', 'none');
         } else if (d.type === 'workflow-title') {
@@ -87,7 +92,20 @@ export function renderNodes(
                 .attr('class', 'node-border')
                 .attr('d', hexPath)
                 .style('fill', 'none')
-                .style('stroke', 'var(--vscode-editorWidget-border)')
+                .style('stroke', 'var(--vscode-descriptionForeground)')
+                .style('stroke-width', '2px')
+                .style('pointer-events', 'all');
+        } else if (d.type === 'reference') {
+            // Reference node: purple border to indicate cross-workflow reference
+            group.append('rect')
+                .attr('class', 'node-border')
+                .attr('width', w)
+                .attr('height', h)
+                .attr('x', -w / 2)
+                .attr('y', -h / 2)
+                .attr('rx', NODE_BORDER_RADIUS)
+                .style('fill', 'none')
+                .style('stroke', '#7c3aed')
                 .style('stroke-width', '2px')
                 .style('pointer-events', 'all');
         } else if (d.type === 'workflow-title') {
@@ -156,32 +174,12 @@ export function renderNodes(
         .style('font-weight', (d: any) => d.type === 'workflow-title' ? '600' : '400')
         .style('letter-spacing', '-0.01em')
         .style('line-height', '1.2')
+        .style('word-break', 'break-word')
         .style('word-wrap', 'break-word')
         .style('overflow-wrap', 'break-word')
         .style('hyphens', 'auto')
         .style('-webkit-hyphens', 'auto')
         .text((d: any) => d.label);
-
-    // Add SHARED badge (bottom-left) for shared node copies
-    const sharedBadge = node.filter((d: any) => d._originalId != null)
-        .append('g')
-        .attr('class', 'shared-badge')
-        .attr('transform', (d: any) => `translate(${-(d.width || NODE_WIDTH) / 2 + 6}, ${(d.height || NODE_HEIGHT) / 2 - 10}) scale(0.8)`);
-
-    sharedBadge.append('g')
-        .attr('class', 'shared-badge-icon')
-        .html(sharedIcon);
-
-    sharedBadge.append('text')
-        .attr('class', 'shared-badge-text')
-        .attr('x', 35)
-        .attr('y', 6)
-        .attr('dominant-baseline', 'middle')
-        .style('font-size', '10px')
-        .style('font-weight', '600')
-        .style('fill', 'var(--vscode-descriptionForeground)')
-        .style('letter-spacing', '0.05em')
-        .text('SHARED');
 
     // Add selection indicator (camera corners) - dynamic based on node dimensions
     const cornerSize = 8;
@@ -203,6 +201,9 @@ export function renderNodes(
     node.append('title')
         .text((d: any) => {
             let text = `${d.label}\nType: ${d.type}`;
+            if (d._refWorkflowName) {
+                text += `\nFrom: ${d._refWorkflowName}`;
+            }
             if (d.description) {
                 text += `\n\n${d.description}`;
             }
@@ -212,96 +213,7 @@ export function renderNodes(
     // Set initial positions
     node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
 
-    // Add hover behavior for shared nodes to show arrows to copies
-    node.filter((d: any) => d._originalId != null)
-        .on('mouseenter.sharedArrows', function(event: any, d: any) {
-            const copies = sharedNodeCopies.get(d._originalId);
-            if (!copies || copies.length < 2) return;
-
-            // Find other copies and draw arrows to them
-            copies.filter(vid => vid !== d.id).forEach(otherVid => {
-                const otherNode = nodesToRender.find((n: any) => n.id === otherVid);
-                if (otherNode && typeof otherNode.x === 'number' && typeof otherNode.y === 'number') {
-                    drawSharedCopyArrow(sharedArrowsContainer, d, otherNode);
-                }
-            });
-        })
-        .on('mouseleave.sharedArrows', function() {
-            sharedArrowsContainer.selectAll('.shared-copy-arrow').remove();
-        });
-
     state.setNode(node);
-}
-
-/**
- * Draw a curved dotted arrow between two shared node copies
- */
-function drawSharedCopyArrow(container: any, fromNode: any, toNode: any): void {
-    // Calculate edge intersection points at node boundaries (use dynamic widths)
-    const fromWidth = fromNode.width || NODE_WIDTH;
-    const fromHeight = fromNode.height || NODE_HEIGHT;
-    const toWidth = toNode.width || NODE_WIDTH;
-    const toHeight = toNode.height || NODE_HEIGHT;
-
-    // Use diamond intersection for decision nodes
-    const startPoint = fromNode.type === 'decision'
-        ? intersectDiamond(toNode, fromNode, fromWidth, fromHeight)
-        : intersectRect(toNode, fromNode, fromWidth, fromHeight);
-    const endPoint = toNode.type === 'decision'
-        ? intersectDiamond(fromNode, toNode, toWidth, toHeight)
-        : intersectRect(fromNode, toNode, toWidth, toHeight);
-
-    const dx = endPoint.x - startPoint.x;
-    const dy = endPoint.y - startPoint.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-
-    if (dist < 10) return; // Too close, skip arrow
-
-    // Calculate control point for quadratic bezier (curve outward)
-    const midX = (startPoint.x + endPoint.x) / 2;
-    const midY = (startPoint.y + endPoint.y) / 2;
-
-    // Perpendicular offset for curve (proportional to distance)
-    const curveOffset = Math.min(dist * 0.25, 100);
-    const perpX = -dy / dist * curveOffset;
-    const perpY = dx / dist * curveOffset;
-
-    const ctrlX = midX + perpX;
-    const ctrlY = midY + perpY;
-
-    const path = `M${startPoint.x},${startPoint.y} Q${ctrlX},${ctrlY} ${endPoint.x},${endPoint.y}`;
-
-    container.append('path')
-        .attr('class', 'shared-copy-arrow')
-        .attr('d', path)
-        .attr('marker-end', 'url(#arrowhead)');
-}
-
-/**
- * Update shared copy arrows during drag (if any are visible)
- */
-export function updateSharedArrows(draggedNode: any): void {
-    const { sharedArrowsContainer, sharedNodeCopies, expandedNodes } = state;
-    if (!sharedArrowsContainer || !draggedNode._originalId) return;
-
-    // Clear existing arrows
-    sharedArrowsContainer.selectAll('.shared-copy-arrow').remove();
-
-    // Get all copies of this shared node
-    const copies = sharedNodeCopies.get(draggedNode._originalId);
-    if (!copies || copies.length < 2) return;
-
-    // Check if we're hovering on this node (arrows should be visible)
-    const nodeElement = document.querySelector(`.node[data-node-id="${draggedNode.id}"]`);
-    if (!nodeElement?.matches(':hover')) return;
-
-    // Redraw arrows to other copies
-    copies.filter(vid => vid !== draggedNode.id).forEach(otherVid => {
-        const otherNode = expandedNodes.find((n: any) => n.id === otherVid);
-        if (otherNode && typeof otherNode.x === 'number' && typeof otherNode.y === 'number') {
-            drawSharedCopyArrow(sharedArrowsContainer, draggedNode, otherNode);
-        }
-    });
 }
 
 /**
@@ -309,7 +221,7 @@ export function updateSharedArrows(draggedNode: any): void {
  */
 export function pulseNodes(nodeIds: string[]): void {
     nodeIds.forEach(id => {
-        d3.select(`.node[data-node-id="${id}"]`)
+        d3.select(`.node[data-node-id="${escapeNodeIdForCSS(id)}"]`)
             .transition().duration(200)
             .style('opacity', 0.3)
             .transition().duration(400)
@@ -327,7 +239,7 @@ export function pulseNodes(nodeIds: string[]): void {
  */
 export function fadeInNodes(nodeIds: string[]): void {
     nodeIds.forEach(id => {
-        const node = d3.select(`.node[data-node-id="${id}"]`);
+        const node = d3.select(`.node[data-node-id="${escapeNodeIdForCSS(id)}"]`);
         if (node.empty()) return;
         node.style('opacity', 0)
             .transition().duration(400)
@@ -343,7 +255,7 @@ export function fadeInNodes(nodeIds: string[]): void {
  */
 export function hydrateLabels(labelUpdates: Map<string, string>): void {
     labelUpdates.forEach((newLabel, nodeId) => {
-        const nodeElement = d3.select(`.node[data-node-id="${nodeId}"]`);
+        const nodeElement = d3.select(`.node[data-node-id="${escapeNodeIdForCSS(nodeId)}"]`);
         if (!nodeElement.empty()) {
             // Update the text span with smooth fade
             nodeElement.select('.node-title-wrapper span')
@@ -372,7 +284,7 @@ export function hydrateLabels(labelUpdates: Map<string, string>): void {
  */
 export function markNodesSyncing(nodeIds: string[]): void {
     nodeIds.forEach(id => {
-        const nodeElement = d3.select(`.node[data-node-id="${id}"]`);
+        const nodeElement = d3.select(`.node[data-node-id="${escapeNodeIdForCSS(id)}"]`);
         if (!nodeElement.empty()) {
             // Add subtle opacity pulse to indicate loading
             nodeElement.classed('syncing', true);
@@ -389,7 +301,7 @@ export function markNodesSyncing(nodeIds: string[]): void {
  */
 export function clearNodesSyncing(nodeIds: string[]): void {
     nodeIds.forEach(id => {
-        const nodeElement = d3.select(`.node[data-node-id="${id}"]`);
+        const nodeElement = d3.select(`.node[data-node-id="${escapeNodeIdForCSS(id)}"]`);
         if (!nodeElement.empty()) {
             nodeElement.classed('syncing', false);
             nodeElement.select('.node-title-wrapper span')
@@ -408,13 +320,14 @@ export function clearNodesSyncing(nodeIds: string[]): void {
  */
 export function markNodesPending(nodeIds: string[]): void {
     nodeIds.forEach(id => {
-        const nodeElement = d3.select(`.node[data-node-id="${id}"]`);
+        const escapedId = escapeNodeIdForCSS(id);
+        const nodeElement = d3.select(`.node[data-node-id="${escapedId}"]`);
         if (!nodeElement.empty()) {
             nodeElement.classed('pending', true);
             nodeElement.select('.node-border').classed('pending', true);
         }
         // Also mark in minimap
-        const minimapNode = d3.select(`.minimap-node[data-node-id="${id}"]`);
+        const minimapNode = d3.select(`.minimap-node[data-node-id="${escapedId}"]`);
         if (!minimapNode.empty()) {
             minimapNode.classed('pending', true);
         }
@@ -429,13 +342,14 @@ export function markNodesPending(nodeIds: string[]): void {
  */
 export function clearNodesPending(nodeIds: string[]): void {
     nodeIds.forEach(id => {
-        const nodeElement = d3.select(`.node[data-node-id="${id}"]`);
+        const escapedId = escapeNodeIdForCSS(id);
+        const nodeElement = d3.select(`.node[data-node-id="${escapedId}"]`);
         if (!nodeElement.empty()) {
             nodeElement.classed('pending', false);
             nodeElement.select('.node-border').classed('pending', false);
         }
         // Also clear in minimap
-        const minimapNode = d3.select(`.minimap-node[data-node-id="${id}"]`);
+        const minimapNode = d3.select(`.minimap-node[data-node-id="${escapedId}"]`);
         if (!minimapNode.empty()) {
             minimapNode.classed('pending', false);
         }
@@ -463,31 +377,63 @@ export function getNodesByFileAndFunctions(filePath: string, functions?: string[
 }
 
 /**
+ * Normalize function name for matching (strip parens, underscores).
+ */
+function normalizeFunctionName(name: string): string {
+    return name.replace(/\(\)$/, '').replace(/_/g, '').toLowerCase();
+}
+
+/**
  * Apply file change state CSS class to nodes matching the given file path.
- * Note: We match ALL nodes from the file, not specific functions, because
- * LLM-generated node.source.function values don't match call graph function names.
+ * Uses node.source.function to match against changed function names.
+ *
+ * Logic:
+ * - functions === undefined → highlight ALL nodes (Phase 1: we don't know yet)
+ * - functions === [] → highlight NONE (Phase 2: no changes detected)
+ * - functions === ['fn1', 'fn2'] → highlight only those specific functions
  */
 export function applyFileChangeState(
     filePath: string,
-    _functions: string[] | undefined,  // Kept for API compatibility but not used
+    functions: string[] | undefined,
     changeState: 'active' | 'changed' | 'unchanged'
 ): void {
     const { currentGraphData } = state;
     if (!currentGraphData?.nodes) return;
 
-    // Get ALL nodes from this file (function matching doesn't work due to name mismatch)
-    const nodeIds = currentGraphData.nodes
-        .filter(node => node.source?.file === filePath)
-        .map(node => node.id);
+    // Get nodes from this file
+    const fileNodes = currentGraphData.nodes.filter(node => node.source?.file === filePath);
+
+    // Determine which nodes to highlight based on functions parameter
+    let nodesToHighlight: typeof fileNodes;
+
+    if (functions === undefined) {
+        // Phase 1: No functions specified = highlight ALL nodes (optimistic)
+        nodesToHighlight = fileNodes;
+    } else if (functions.length === 0) {
+        // Phase 2 with no changes: empty array = highlight NONE
+        nodesToHighlight = [];
+    } else {
+        // Phase 2 with changes: highlight only specified functions
+        const changedFuncsNormalized = new Set(functions.map(normalizeFunctionName));
+        nodesToHighlight = fileNodes.filter(node => {
+            const nodeFunc = node.source?.function;
+            if (!nodeFunc) return false;
+            return changedFuncsNormalized.has(normalizeFunctionName(nodeFunc));
+        });
+    }
+
+    const nodeIdsToHighlight = new Set(nodesToHighlight.map(n => n.id));
+    const allFileNodeIds = fileNodes.map(n => n.id);
 
     if (changeState === 'unchanged') {
         // Clear all indicators for this file
-        nodeIds.forEach(nodeId => {
-            const border = document.querySelector(`.node[data-node-id="${nodeId}"] .node-border`);
+        allFileNodeIds.forEach(nodeId => {
+            const escapedId = escapeNodeIdForCSS(nodeId);
+            const border = document.querySelector(`.node[data-node-id="${escapedId}"] .node-border`);
             if (border) {
                 border.classList.remove('file-active', 'file-changed');
             }
-            const minimapNode = document.querySelector(`.minimap-node[data-node-id="${nodeId}"]`);
+            const minimapNode = document.querySelector(`.minimap-node[data-node-id="${escapedId}"]`);
             if (minimapNode) {
                 minimapNode.classList.remove('file-active', 'file-changed');
             }
@@ -495,33 +441,38 @@ export function applyFileChangeState(
         return;
     }
 
-    // For 'active' or 'changed', apply to all nodes from the file
-
-    nodeIds.forEach(nodeId => {
-        const border = document.querySelector(`.node[data-node-id="${nodeId}"] .node-border`);
+    // For 'active' or 'changed', apply only to matched nodes
+    allFileNodeIds.forEach(nodeId => {
+        const escapedId = escapeNodeIdForCSS(nodeId);
+        const border = document.querySelector(`.node[data-node-id="${escapedId}"] .node-border`);
         if (!border) return;
 
         // Remove existing file state classes
         border.classList.remove('file-active', 'file-changed');
 
-        // Apply new state
-        if (changeState === 'active') {
-            border.classList.add('file-active');
-        } else if (changeState === 'changed') {
-            border.classList.add('file-changed');
+        // Apply new state only if this node is in the highlight set
+        if (nodeIdsToHighlight.has(nodeId)) {
+            if (changeState === 'active') {
+                border.classList.add('file-active');
+            } else if (changeState === 'changed') {
+                border.classList.add('file-changed');
+            }
         }
     });
 
     // Also update minimap nodes
-    nodeIds.forEach(nodeId => {
-        const minimapNode = document.querySelector(`.minimap-node[data-node-id="${nodeId}"]`);
+    allFileNodeIds.forEach(nodeId => {
+        const escapedId = escapeNodeIdForCSS(nodeId);
+        const minimapNode = document.querySelector(`.minimap-node[data-node-id="${escapedId}"]`);
         if (!minimapNode) return;
 
         minimapNode.classList.remove('file-active', 'file-changed');
-        if (changeState === 'active') {
-            minimapNode.classList.add('file-active');
-        } else if (changeState === 'changed') {
-            minimapNode.classList.add('file-changed');
+        if (nodeIdsToHighlight.has(nodeId)) {
+            if (changeState === 'active') {
+                minimapNode.classList.add('file-active');
+            } else if (changeState === 'changed') {
+                minimapNode.classList.add('file-changed');
+            }
         }
     });
 }
@@ -544,7 +495,7 @@ export function clearFileChangeIndicators(): void {
  * Helper to create a single node element with all its structure.
  * Extracted from renderNodes for reuse in incremental updates.
  */
-function createNodeElement(nodeGroup: any, d: any, sharedNodeCopies: Map<string, string[]>): void {
+function createNodeElement(nodeGroup: any, d: any): void {
     const w = d.width || NODE_WIDTH;
     const h = d.height || NODE_HEIGHT;
 
@@ -554,6 +505,15 @@ function createNodeElement(nodeGroup: any, d: any, sharedNodeCopies: Map<string,
         const hexPath = `M ${-w/2 + indent} ${-h/2} L ${w/2 - indent} ${-h/2} L ${w/2} 0 L ${w/2 - indent} ${h/2} L ${-w/2 + indent} ${h/2} L ${-w/2} 0 Z`;
         nodeGroup.append('path')
             .attr('d', hexPath)
+            .style('fill', 'var(--vscode-editor-background)')
+            .style('stroke', 'none');
+    } else if (d.type === 'reference') {
+        nodeGroup.append('rect')
+            .attr('width', w)
+            .attr('height', h)
+            .attr('x', -w / 2)
+            .attr('y', -h / 2)
+            .attr('rx', NODE_BORDER_RADIUS)
             .style('fill', 'var(--vscode-editor-background)')
             .style('stroke', 'none');
     } else if (d.type === 'workflow-title') {
@@ -586,6 +546,18 @@ function createNodeElement(nodeGroup: any, d: any, sharedNodeCopies: Map<string,
             .attr('d', hexPath)
             .style('fill', 'none')
             .style('stroke', 'var(--vscode-editorWidget-border)')
+            .style('stroke-width', '2px')
+            .style('pointer-events', 'all');
+    } else if (d.type === 'reference') {
+        nodeGroup.append('rect')
+            .attr('class', 'node-border')
+            .attr('width', w)
+            .attr('height', h)
+            .attr('x', -w / 2)
+            .attr('y', -h / 2)
+            .attr('rx', NODE_BORDER_RADIUS)
+            .style('fill', 'none')
+            .style('stroke', '#7c3aed')
             .style('stroke-width', '2px')
             .style('pointer-events', 'all');
     } else if (d.type === 'workflow-title') {
@@ -640,33 +612,12 @@ function createNodeElement(nodeGroup: any, d: any, sharedNodeCopies: Map<string,
         .style('font-weight', d.type === 'workflow-title' ? '600' : '400')
         .style('letter-spacing', '-0.01em')
         .style('line-height', '1.2')
+        .style('word-break', 'break-word')
         .style('word-wrap', 'break-word')
         .style('overflow-wrap', 'break-word')
         .style('hyphens', 'auto')
         .style('-webkit-hyphens', 'auto')
         .text(d.label);
-
-    // Add SHARED badge for shared node copies
-    if (d._originalId != null) {
-        const sharedBadge = nodeGroup.append('g')
-            .attr('class', 'shared-badge')
-            .attr('transform', `translate(${-w / 2 + 6}, ${h / 2 - 10}) scale(0.8)`);
-
-        sharedBadge.append('g')
-            .attr('class', 'shared-badge-icon')
-            .html(sharedIcon);
-
-        sharedBadge.append('text')
-            .attr('class', 'shared-badge-text')
-            .attr('x', 35)
-            .attr('y', 6)
-            .attr('dominant-baseline', 'middle')
-            .style('font-size', '10px')
-            .style('font-weight', '600')
-            .style('fill', 'var(--vscode-descriptionForeground)')
-            .style('letter-spacing', '0.05em')
-            .text('SHARED');
-    }
 
     // Add selection indicator
     const cornerSize = 8;
@@ -702,14 +653,11 @@ export function updateNodesIncremental(
     dragged: (event: any, d: any) => void,
     dragended: (event: any, d: any) => void
 ): void {
-    const { g, expandedNodes, sharedNodeCopies } = state;
+    const { g, expandedNodes } = state;
 
     // Get or create the nodes container
     let nodesContainer = g.select('.nodes-container');
     if (nodesContainer.empty()) {
-        // Also need shared arrows container
-        const sharedArrowsContainer = g.append('g').attr('class', 'shared-arrows-container');
-        state.setSharedArrowsContainer(sharedArrowsContainer);
         nodesContainer = g.append('g').attr('class', 'nodes-container');
     }
 
@@ -732,25 +680,8 @@ export function updateNodesIncremental(
 
     // Build each new node's internal structure
     enterNodes.each(function(this: SVGGElement, d: any) {
-        createNodeElement(d3.select(this), d, sharedNodeCopies);
+        createNodeElement(d3.select(this), d);
     });
-
-    // Add hover behavior for shared nodes (enter only)
-    const { sharedArrowsContainer } = state;
-    enterNodes.filter((d: any) => d._originalId != null)
-        .on('mouseenter.sharedArrows', function(event: any, d: any) {
-            const copies = sharedNodeCopies.get(d._originalId);
-            if (!copies || copies.length < 2) return;
-            copies.filter(vid => vid !== d.id).forEach(otherVid => {
-                const otherNode = expandedNodes.find((n: any) => n.id === otherVid);
-                if (otherNode && typeof otherNode.x === 'number' && typeof otherNode.y === 'number') {
-                    drawSharedCopyArrow(sharedArrowsContainer, d, otherNode);
-                }
-            });
-        })
-        .on('mouseleave.sharedArrows', function() {
-            sharedArrowsContainer.selectAll('.shared-copy-arrow').remove();
-        });
 
     // UPDATE + ENTER: Update positions on all nodes
     const allNodes = nodeSelection.merge(enterNodes);

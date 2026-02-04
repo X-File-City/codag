@@ -1,5 +1,4 @@
 import re
-from typing import Optional
 
 class StaticAnalyzer:
     # LLM Client Detection Patterns
@@ -99,15 +98,6 @@ class StaticAnalyzer:
         r"\.generate\(",
     ]
 
-    # Tool/Function Patterns
-    TOOL_PATTERNS = [
-        r"tools\s*=",
-        r"tool_choice\s*=",
-        r"@tool",
-        r"tool_use",
-        r"function_call",
-    ]
-
     # Framework Patterns (keep for framework-specific detection)
     FRAMEWORK_PATTERNS = {
         "langgraph": [
@@ -174,7 +164,7 @@ class StaticAnalyzer:
         return (has_llm_client and has_llm_calls) or has_framework
 
     @staticmethod
-    def detect_framework(code: str, file_path: str) -> Optional[str]:
+    def detect_framework(code: str, file_path: str) -> str | None:
         """Detect workflow framework from actual imports"""
 
         # Check for specific frameworks first
@@ -197,10 +187,5 @@ class StaticAnalyzer:
             return "generic-llm"
 
         return None
-
-    @staticmethod
-    def should_analyze_file(file_path: str) -> bool:
-        """Check if file is worth analyzing"""
-        return file_path.endswith(('.py', '.ts', '.js', '.tsx', '.jsx'))
 
 static_analyzer = StaticAnalyzer()

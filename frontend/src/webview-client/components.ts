@@ -186,38 +186,3 @@ export function renderCollapsedComponents(onToggle: () => void): void {
         .text((d: WorkflowComponent) => `contains ${d.nodes.length} nodes`);
 }
 
-/**
- * Update visibility of collapsed components based on current state.
- * Called when components are expanded/collapsed.
- */
-export function updateCollapsedComponentsVisibility(): void {
-    const { g, workflowGroups } = state;
-    const expandedComponents = state.getExpandedComponents();
-
-    // Remove existing collapsed components and re-render
-    g.selectAll('.collapsed-components').remove();
-
-    // Re-render will be called by the main update function
-}
-
-/**
- * Get collapsed component at position (for hit testing)
- */
-export function getCollapsedComponentAt(x: number, y: number): WorkflowComponent | null {
-    const { workflowGroups } = state;
-    const expandedComponents = state.getExpandedComponents();
-
-    for (const group of workflowGroups) {
-        for (const comp of (group.components || [])) {
-            if (expandedComponents.has(comp.id)) continue;
-            if (!comp.bounds) continue;
-
-            if (x >= comp.bounds.minX && x <= comp.bounds.maxX &&
-                y >= comp.bounds.minY && y <= comp.bounds.maxY) {
-                return comp;
-            }
-        }
-    }
-
-    return null;
-}

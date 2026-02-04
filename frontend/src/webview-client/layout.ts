@@ -1,6 +1,6 @@
 // ELK layout and workflow grid tiling
 import * as state from './state';
-import { snapToGrid, getNodeWorkflowCount, getVirtualNodeId } from './utils';
+import { snapToGrid } from './utils';
 import { createWorkflowPattern } from './setup';
 import { measureNodeDimensions } from './helpers';
 import { measureTextWidth } from './groups';
@@ -97,7 +97,8 @@ export async function layoutWorkflows(defs: any): Promise<void> {
             // Force title nodes to the first layer so they appear at the top
             if (isTitleNode) {
                 elkNode.layoutOptions = {
-                    'elk.layering.layerConstraint': 'FIRST'
+                    'elk.layering.layerConstraint': 'FIRST',
+                    'elk.priority': '100'
                 };
             }
 
@@ -132,9 +133,7 @@ export async function layoutWorkflows(defs: any): Promise<void> {
         allGroupNodes.forEach((node: any) => {
             const pos = elkPositions.get(node.id);
             if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
-                const isShared = getNodeWorkflowCount(node.id, workflowGroups) > 1;
-                const key = isShared ? getVirtualNodeId(node.id, group.id) : node.id;
-                localPositions.set(key, { x: snapToGrid(pos.x), y: snapToGrid(pos.y) });
+                localPositions.set(node.id, { x: snapToGrid(pos.x), y: snapToGrid(pos.y) });
             }
         });
 
@@ -143,10 +142,7 @@ export async function layoutWorkflows(defs: any): Promise<void> {
         if (positionEntries.length === 0) continue;
 
         // Build array with position + dimensions for each node
-        const nodesWithBounds = positionEntries.map(([key, pos]) => {
-            // Find node to get its dynamic dimensions
-            // Shared nodes have keys like "nodeId__groupId", title nodes have "__title_..."
-            const nodeId = key.startsWith('__title_') ? key : (key.includes('__') ? key.split('__')[0] : key);
+        const nodesWithBounds = positionEntries.map(([nodeId, pos]) => {
             const node = allGroupNodes.find((n: any) => n.id === nodeId);
             const width = node?.width || NODE_WIDTH;
             const height = node?.height || NODE_HEIGHT;
@@ -232,12 +228,6 @@ export async function layoutWorkflows(defs: any): Promise<void> {
             return false;
         };
 
-        // Distance from position center to origin
-        const distToCenter = (x: number, y: number, w: number, h: number): number => {
-            const cx = x + w / 2;
-            const cy = y + h / 2;
-            return Math.sqrt(cx * cx + cy * cy);
-        };
 
         // Find corners: positions where new workflow is S away from TWO edges
         // (one horizontal edge of workflow A, one vertical edge of workflow B)
@@ -287,13 +277,26 @@ export async function layoutWorkflows(defs: any): Promise<void> {
             // Find all corners
             const corners = getCorners(w, h);
 
-            // Find valid corner closest to center
+            // Calculate centroid of placed workflows (true radial center)
+            const centroidX = placed.reduce((sum, p) => sum + p.x + p.w / 2, 0) / placed.length;
+            const centroidY = placed.reduce((sum, p) => sum + p.y + p.h / 2, 0) / placed.length;
+
+            // Distance from candidate center to placed centroid
+            const distToCentroid = (x: number, y: number, cw: number, ch: number): number => {
+                const cx = x + cw / 2;
+                const cy = y + ch / 2;
+                const dx = cx - centroidX;
+                const dy = cy - centroidY;
+                return Math.sqrt(dx * dx + dy * dy);
+            };
+
+            // Find valid corner closest to centroid
             let bestPos: { x: number; y: number } | null = null;
             let bestDist = Infinity;
 
             for (const pos of corners) {
                 if (!overlaps(pos.x, pos.y, w, h)) {
-                    const dist = distToCenter(pos.x, pos.y, w, h);
+                    const dist = distToCentroid(pos.x, pos.y, w, h);
                     if (dist < bestDist) {
                         bestDist = dist;
                         bestPos = pos;
@@ -330,23 +333,17 @@ export async function layoutWorkflows(defs: any): Promise<void> {
         // Apply offset to ALL node positions
         // Normalize by subtracting localBounds origin so positions start at (0,0)
         nodes.forEach((node: any) => {
-            const isShared = getNodeWorkflowCount(node.id, workflowGroups) > 1;
-            const key = isShared ? getVirtualNodeId(node.id, group.id) : node.id;
-            const localPos = localPositions.get(key);
+            const localPos = localPositions.get(node.id);
 
             if (localPos) {
                 const x = localPos.x - localBoundsMinX + offsetX;
                 const y = localPos.y - localBoundsMinY + offsetY;
 
-                if (isShared) {
-                    originalPositions.set(key, { x, y });
-                } else {
-                    node.x = x;
-                    node.y = y;
-                    node.fx = x;
-                    node.fy = y;
-                    originalPositions.set(node.id, { x, y });
-                }
+                node.x = x;
+                node.y = y;
+                node.fx = x;
+                node.fy = y;
+                originalPositions.set(node.id, { x, y });
             }
         });
 
@@ -375,16 +372,12 @@ export async function layoutWorkflows(defs: any): Promise<void> {
             if (compNodes.length === 0) return;
 
             // Get positions for component nodes
-            const nodePositions = compNodes.map((node: any) => {
-                const isShared = getNodeWorkflowCount(node.id, workflowGroups) > 1;
-                if (isShared) {
-                    const virtualId = getVirtualNodeId(node.id, group.id);
-                    const pos = originalPositions.get(virtualId);
-                    return pos ? { x: pos.x, y: pos.y, w: node.width || NODE_WIDTH, h: node.height || NODE_HEIGHT } : null;
-                } else {
-                    return { x: node.x, y: node.y, w: node.width || NODE_WIDTH, h: node.height || NODE_HEIGHT };
-                }
-            }).filter((p: any) => p !== null);
+            const nodePositions = compNodes.map((node: any) => ({
+                x: node.x,
+                y: node.y,
+                w: node.width || NODE_WIDTH,
+                h: node.height || NODE_HEIGHT
+            }));
 
             if (nodePositions.length === 0) return;
 
@@ -434,10 +427,10 @@ export async function layoutWorkflows(defs: any): Promise<void> {
         });
     });
 
-    // Create expanded nodes (shared nodes become virtual copies per workflow)
+    // Create expanded nodes list (nodes in valid workflows with positions)
     // This must happen BEFORE renderEdges() so edges can find node positions
     const expandedNodesList: any[] = [];
-    const sharedNodeCopies = new Map<string, string[]>();
+    const skippedNodes: string[] = [];
 
     currentGraphData.nodes.forEach((node: any) => {
         // Skip nodes in collapsed components
@@ -449,33 +442,14 @@ export async function layoutWorkflows(defs: any): Promise<void> {
             g.nodes.includes(node.id) && g.nodes.length >= 3
         );
 
-        if (nodeWorkflows.length > 1) {
-            // Shared node: create a copy for each workflow
-            nodeWorkflows.forEach((wf: any) => {
-                const virtualId = getVirtualNodeId(node.id, wf.id);
-                const pos = originalPositions.get(virtualId) || { x: 0, y: 0 };
-                expandedNodesList.push({
-                    ...node,
-                    id: virtualId,
-                    _originalId: node.id,
-                    _workflowId: wf.id,
-                    x: pos.x,
-                    y: pos.y,
-                    fx: pos.x,
-                    fy: pos.y
-                });
-                if (!sharedNodeCopies.has(node.id)) {
-                    sharedNodeCopies.set(node.id, []);
-                }
-                sharedNodeCopies.get(node.id)!.push(virtualId);
-            });
-        } else if (nodeWorkflows.length === 1) {
-            // Non-shared node: use original (position already set on node object)
+        if (nodeWorkflows.length >= 1) {
+            // Node is in at least one valid workflow - add to expanded list
             expandedNodesList.push(node);
+        } else {
+            // Nodes in no valid workflow (< 3 nodes) are skipped
+            skippedNodes.push(node.id);
         }
-        // Nodes in no valid workflow (< 3 nodes) are skipped
     });
 
     state.setExpandedNodes(expandedNodesList);
-    state.setSharedNodeCopies(sharedNodeCopies);
 }

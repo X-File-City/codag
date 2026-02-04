@@ -8,6 +8,7 @@ import { renderGroups } from './groups';
 import { renderCollapsedComponents } from './components';
 import { dragstarted, dragged, dragended } from './drag';
 import { renderMinimap } from './minimap';
+import { addWorkflowExportButtons } from './export';
 
 declare const d3: any;
 
@@ -31,7 +32,6 @@ export async function updateComponentVisibility(): Promise<void> {
     g.selectAll('.nodes-container').remove();
     g.selectAll('.collapsed-groups').remove();
     g.selectAll('.collapsed-components').remove();
-    g.selectAll('.shared-arrows-container').remove();
 
     // Get defs element for patterns
     const defs = svg.select('defs');
@@ -50,4 +50,7 @@ export async function updateComponentVisibility(): Promise<void> {
 
     // Update directory
     populateDirectory();
+
+    // Re-add export buttons
+    addWorkflowExportButtons();
 }

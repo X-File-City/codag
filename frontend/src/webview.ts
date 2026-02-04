@@ -2,8 +2,13 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { WorkflowGraph } from './api';
-import { ViewState } from './copilot/types';
 import { FileTreeNode } from './file-picker';
+
+export interface ViewState {
+    selectedNodeId: string | null;
+    expandedWorkflowIds: string[];
+    lastUpdated: number;
+}
 export interface LoadingOptions {
     loading?: boolean;
     progress?: { current: number; total: number };
@@ -40,6 +45,8 @@ export class WebviewManager {
             } else {
                 this.pendingMessages.push(message);
             }
+        } else {
+            console.log(`[Codag] Message dropped (panel closed): ${message.command}`);
         }
     }
 
@@ -113,6 +120,10 @@ export class WebviewManager {
         this.postMessage({ command: 'backendError' });
     }
 
+    notifyApiKeyError(reason: 'missing' | 'invalid') {
+        this.postMessage({ command: 'apiKeyError', reason });
+    }
+
     /**
      * Notify webview of file state changes for live file indicators
      */
@@ -124,6 +135,20 @@ export class WebviewManager {
         this.postMessage({
             command: 'fileStateChange',
             changes
+        });
+    }
+
+    /**
+     * Show a toast notification in the webview
+     */
+    showNotification(options: {
+        type: 'info' | 'success' | 'warning' | 'error';
+        message: string;
+        dismissMs?: number;
+    }) {
+        this.postMessage({
+            command: 'showNotification',
+            ...options
         });
     }
 
@@ -188,7 +213,7 @@ export class WebviewManager {
 
                         const editor = await vscode.window.showTextDocument(document, targetColumn);
 
-                        const line = message.line - 1;
+                        const line = Math.max(0, (message.line || 1) - 1);
                         const range = new vscode.Range(line, 0, line, 0);
                         editor.selection = new vscode.Selection(range.start, range.end);
                         editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
@@ -234,6 +259,34 @@ export class WebviewManager {
                 } else if (message.command === 'webviewReady') {
                     // Webview is ready to receive messages
                     this.onWebviewReady();
+                } else if (message.command === 'saveExport') {
+                    // Handle PNG export save dialog
+                    try {
+                        const os = require('os');
+                        const path = require('path');
+                        const fs = require('fs');
+                        const desktopPath = path.join(os.homedir(), 'Desktop', message.suggestedName);
+
+                        const uri = await vscode.window.showSaveDialog({
+                            defaultUri: vscode.Uri.file(desktopPath),
+                            filters: { 'PNG Images': ['png'] },
+                            saveLabel: 'Export'
+                        });
+
+                        if (uri) {
+                            // Decode base64 and write to file using Node.js fs
+                            // This is more reliable for overwriting files on macOS
+                            const buffer = Buffer.from(message.data, 'base64');
+                            fs.writeFileSync(uri.fsPath, buffer);
+                            this.postMessage({ command: 'exportSuccess', path: uri.fsPath });
+                        } else {
+                            // User cancelled
+                            this.postMessage({ command: 'exportCancelled' });
+                        }
+                    } catch (error: any) {
+                        console.error('Export save error:', error);
+                        this.postMessage({ command: 'exportError', error: error.message });
+                    }
                 }
             },
             undefined,
@@ -409,6 +462,15 @@ export class WebviewManager {
         this.postMessage({
             command: 'initGraph',
             graph
+        });
+    }
+
+    /**
+     * Clear the graph completely (used when cache is cleared before reanalysis)
+     */
+    clearGraph() {
+        this.postMessage({
+            command: 'clearGraph'
         });
     }
 

@@ -221,10 +221,24 @@ export function findMatchingNodeId(
     }
 
     // Strategy 4: Last resort - match by function name only
+    // But only if the target has no file path, OR the matched node shares a filename
+    // Otherwise we get false matches (e.g., gemini_client.py::analyze_workflow → main.py::analyze_workflow)
     if (parsed) {
         const funcMatches = lookup.byFunction.get(parsed.func.toLowerCase());
-        const bestFunc = pickBestMatch(funcMatches || []);
-        if (bestFunc) return bestFunc;
+        if (funcMatches && funcMatches.length > 0) {
+            const targetBasename = parsed.file.split('/').pop()?.toLowerCase();
+            // Filter to matches that share the same filename (if target specifies a file)
+            const compatibleMatches = targetBasename
+                ? funcMatches.filter(m => {
+                    const mParsed = parseNodeId(m);
+                    if (!mParsed) return false;
+                    const mBasename = mParsed.file.split('/').pop()?.toLowerCase();
+                    return mBasename === targetBasename;
+                })
+                : funcMatches;
+            const bestFunc = pickBestMatch(compatibleMatches);
+            if (bestFunc) return bestFunc;
+        }
     }
 
     return null;
@@ -350,9 +364,8 @@ export function addHttpConnectionEdges(
 
     // Build lookup for fuzzy matching (handles path suffix matching)
     const lookup = buildNodeLookup(graph.nodes);
-    const existingNodeIds = new Set(graph.nodes.map(n => n.id));
-    const newNodes: WorkflowNode[] = [];
     const newEdges: WorkflowEdge[] = [];
+    const newNodes: WorkflowNode[] = [];
 
     for (const conn of httpConnections) {
         // Convert full paths to relative paths for node ID matching
@@ -364,66 +377,60 @@ export function addHttpConnectionEdges(
         const handlerCandidateId = `${handlerRelPath}::${conn.handler.function}`;
 
         // Try fuzzy matching to find existing nodes
-        const matchedClientId = findMatchingNodeId(clientCandidateId, lookup);
-        const matchedHandlerId = findMatchingNodeId(handlerCandidateId, lookup);
+        let matchedClientId = findMatchingNodeId(clientCandidateId, lookup);
+        let matchedHandlerId = findMatchingNodeId(handlerCandidateId, lookup);
 
-        // Use matched ID if found, otherwise use relative path candidate
-        const clientNodeId = matchedClientId || clientCandidateId;
-        const handlerNodeId = matchedHandlerId || handlerCandidateId;
-
-        // Create placeholder node for client if no match found
-        if (!matchedClientId && !existingNodeIds.has(clientNodeId)) {
-            newNodes.push({
-                id: clientNodeId,
-                label: `${conn.client.method} ${conn.client.normalizedPath}`,
+        // Create stub node for client if it doesn't exist (e.g., Go services calling Python APIs)
+        if (!matchedClientId) {
+            const stubId = clientCandidateId;
+            const func = conn.client.function;
+            const stubNode: WorkflowNode = {
+                id: stubId,
+                label: `${func}()`,  // Add () to indicate it's a function
                 type: 'step',
-                source: {
-                    file: clientRelPath,  // Use relative path
-                    line: conn.client.line,
-                    function: conn.client.function
-                }
-            });
-            existingNodeIds.add(clientNodeId);
-            // Add to lookup for subsequent matches
-            lookup.exact.add(clientNodeId);
-            lookup.exact.add(clientNodeId.toLowerCase());
+                source: { file: clientRelPath, line: conn.client.line, function: func }
+            };
+            newNodes.push(stubNode);
+            lookup.exact.add(stubId);
+            lookup.exact.add(stubId.toLowerCase());
+            matchedClientId = stubId;
         }
 
-        // Create placeholder node for handler if no match found
-        if (!matchedHandlerId && !existingNodeIds.has(handlerNodeId)) {
-            newNodes.push({
-                id: handlerNodeId,
-                label: `Handle ${conn.handler.path}`,
+        // Create stub node for handler endpoints that don't exist as cached nodes.
+        // These are API endpoints in files with no LLM workflows (e.g., vendor-api).
+        if (!matchedHandlerId) {
+            const stubId = handlerCandidateId;
+            const func = conn.handler.function;
+            const stubNode: WorkflowNode = {
+                id: stubId,
+                label: `${func}()`,  // Add () to indicate it's a function
                 type: 'step',
-                source: {
-                    file: handlerRelPath,  // Use relative path
-                    line: conn.handler.line,
-                    function: conn.handler.function
-                }
-            });
-            existingNodeIds.add(handlerNodeId);
-            lookup.exact.add(handlerNodeId);
-            lookup.exact.add(handlerNodeId.toLowerCase());
+                source: { file: handlerRelPath, line: conn.handler.line, function: func }
+            };
+            newNodes.push(stubNode);
+            lookup.exact.add(stubId);
+            lookup.exact.add(stubId.toLowerCase());
+            matchedHandlerId = stubId;
         }
 
         // Create edge between client and handler
         const edgeLabel = `${conn.client.method} ${conn.client.normalizedPath}`;
         const edgeExists = graph.edges.some(
-            e => e.source === clientNodeId && e.target === handlerNodeId
+            e => e.source === matchedClientId && e.target === matchedHandlerId
         ) || newEdges.some(
-            e => e.source === clientNodeId && e.target === handlerNodeId
+            e => e.source === matchedClientId && e.target === matchedHandlerId
         );
 
         if (!edgeExists) {
             newEdges.push({
-                source: clientNodeId,
-                target: handlerNodeId,
+                source: matchedClientId,
+                target: matchedHandlerId,
                 label: edgeLabel
             });
         }
     }
 
-    _log(`[HTTP] Added ${newEdges.length} edges, ${newNodes.length} nodes`);
+    _log(`[HTTP] Added ${newEdges.length} edges, ${newNodes.length} stub nodes`);
 
     return {
         graph: {
@@ -457,19 +464,18 @@ export function addHttpCallerEdges(
         return { graph, addedEdges: 0, addedNodes: 0 };
     }
 
-    let lookup = buildNodeLookup(graph.nodes);
+    const lookup = buildNodeLookup(graph.nodes);
     const existingEdges = new Set(graph.edges.map(e => `${e.source}::${e.target}`));
-    const existingNodeIds = new Set(graph.nodes.map(n => n.id));
     const newEdges: WorkflowEdge[] = [];
-    const newNodes: WorkflowNode[] = [];
 
     // Build a set of HTTP client function names to look for
     const httpClientFunctions = new Map<string, string>(); // funcName → nodeId
     for (const conn of httpConnections) {
         const clientRelPath = toRelativePath(conn.client.file);
         const clientNodeId = `${clientRelPath}::${conn.client.function}`;
-        // Try to find the actual node ID (might be fuzzy matched)
-        const matchedId = findMatchingNodeId(clientNodeId, lookup) || clientNodeId;
+        // Only add if the node actually exists in the graph
+        const matchedId = findMatchingNodeId(clientNodeId, lookup);
+        if (!matchedId) continue;
         httpClientFunctions.set(conn.client.function, matchedId);
         // Also add variations (e.g., "api.analyzeWorkflow" → "analyzeWorkflow")
         httpClientFunctions.set(`api.${conn.client.function}`, matchedId);
@@ -494,28 +500,10 @@ export function addHttpCallerEdges(
 
                 if (targetNodeId) {
                     const callerNodeId = `${fileRelPath}::${func.name}`;
-                    let matchedCallerId = findMatchingNodeId(callerNodeId, lookup);
+                    const matchedCallerId = findMatchingNodeId(callerNodeId, lookup);
 
-                    // If caller node doesn't exist, create it
-                    if (!matchedCallerId && !existingNodeIds.has(callerNodeId)) {
-                        const newNode: WorkflowNode = {
-                            id: callerNodeId,
-                            label: func.name,
-                            type: 'step',
-                            description: `Calls ${funcName}()`,
-                            source: {
-                                file: file.path,
-                                line: func.line,
-                                function: func.name
-                            }
-                        };
-                        newNodes.push(newNode);
-                        existingNodeIds.add(callerNodeId);
-                        matchedCallerId = callerNodeId;
-                        // Rebuild lookup with new node
-                        lookup = buildNodeLookup([...graph.nodes, ...newNodes]);
-                    }
-
+                    // Only create edge if caller already exists as a real node.
+                    // Never create placeholder nodes with raw function names.
                     if (matchedCallerId) {
                         const edgeKey = `${matchedCallerId}::${targetNodeId}`;
                         if (!existingEdges.has(edgeKey)) {
@@ -532,16 +520,15 @@ export function addHttpCallerEdges(
         }
     }
 
-    _log(`[HTTP-CALLERS] Added ${newNodes.length} nodes, ${newEdges.length} edges`);
+    _log(`[HTTP-CALLERS] Added ${newEdges.length} edges`);
 
     return {
         graph: {
             ...graph,
-            nodes: [...graph.nodes, ...newNodes],
             edges: [...graph.edges, ...newEdges]
         },
         addedEdges: newEdges.length,
-        addedNodes: newNodes.length
+        addedNodes: 0
     };
 }
 

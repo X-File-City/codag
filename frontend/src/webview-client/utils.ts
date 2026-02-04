@@ -1,15 +1,24 @@
 // Utility functions for webview client
 
-import { GRID_SIZE, ARROW_HEAD_LENGTH } from './constants';
+import { ARROW_HEAD_LENGTH } from './constants';
 
 /**
- * Snap value to nearest grid point
- * TODO: Debug - grid snapping may cause workflow spacing inconsistencies
+ * Escape a node ID for use in CSS attribute selectors.
+ * Node IDs may contain characters invalid in CSS selectors (::, spaces, etc.)
+ */
+export function escapeNodeIdForCSS(nodeId: string): string {
+    // CSS.escape handles all special characters properly
+    return CSS.escape(nodeId);
+}
+
+/**
+ * Snap value to nearest grid point.
+ * Currently disabled — grid snapping causes workflow spacing inconsistencies
+ * with ELK layout. Kept as a pass-through so callers don't need to change
+ * if/when this is re-enabled.
  */
 export function snapToGrid(value: number): number {
-    // Disabled temporarily to debug workflow spacing
     return value;
-    // return Math.round(value / GRID_SIZE) * GRID_SIZE;
 }
 
 /**
@@ -106,9 +115,6 @@ export function intersectHexagon(
     };
 }
 
-// Keep old name as alias for compatibility
-export const intersectDiamond = intersectHexagon;
-
 /**
  * Generate unique color from string hash using HSL
  */
@@ -142,111 +148,6 @@ export function getNodeOrCollapsedGroup(nodeId: string, nodes: any[], workflowGr
     }
 
     return nodes.find((n: any) => n.id === nodeId);
-}
-
-/**
- * Helper function to count how many rendered workflows (3+ nodes) contain a node
- */
-export function getNodeWorkflowCount(nodeId: string, workflowGroups: any[]): number {
-    return workflowGroups.filter((g: any) =>
-        g.nodes.includes(nodeId) && g.nodes.length >= 3
-    ).length;
-}
-
-/**
- * Helper function to check if node is in a specific workflow
- */
-export function isNodeInWorkflow(nodeId: string, workflowId: string, workflowGroups: any[]): boolean {
-    const workflow = workflowGroups.find((g: any) => g.id === workflowId);
-    return workflow ? workflow.nodes.includes(nodeId) : false;
-}
-
-/**
- * Generate virtual ID for a shared node copy (nodeId__workflowId)
- */
-export function getVirtualNodeId(nodeId: string, workflowId: string): string {
-    return `${nodeId}__${workflowId}`;
-}
-
-/**
- * Extract original node ID from virtual ID
- * Virtual IDs have format: nodeId__workflowId (where workflowId starts with "workflow_")
- * Node IDs themselves contain __ (format: file__function or file__function__line)
- */
-export function getOriginalNodeId(virtualId: string): string {
-    // Check if this ends with a workflow suffix (e.g., __workflow_1)
-    const workflowSuffixMatch = virtualId.match(/__workflow_\d+$/);
-    if (workflowSuffixMatch) {
-        // Strip the workflow suffix
-        return virtualId.slice(0, -workflowSuffixMatch[0].length);
-    }
-    // Not a virtual ID, return as-is
-    return virtualId;
-}
-
-/**
- * Extract workflow ID from virtual node ID
- */
-export function getWorkflowIdFromVirtual(virtualId: string): string | null {
-    const workflowSuffixMatch = virtualId.match(/__workflow_(\d+)$/);
-    return workflowSuffixMatch ? `workflow_${workflowSuffixMatch[1]}` : null;
-}
-
-/**
- * Check if a node ID is a virtual (duplicated) ID
- */
-export function isVirtualNodeId(id: string): boolean {
-    return id.includes('__');
-}
-
-/**
- * Shorten endpoint along the line by offset amount (for arrow head clearance)
- */
-function shortenEndpoint(
-    source: { x: number; y: number },
-    target: { x: number; y: number },
-    offset: number
-): { x: number; y: number } {
-    const dx = target.x - source.x;
-    const dy = target.y - source.y;
-    const length = Math.sqrt(dx * dx + dy * dy);
-
-    if (length === 0 || length <= offset) return target;
-
-    const ratio = (length - offset) / length;
-    return {
-        x: source.x + dx * ratio,
-        y: source.y + dy * ratio
-    };
-}
-
-/**
- * Determine which edge of a rectangle a point is on
- * Returns direction vector perpendicular to that edge (pointing outward)
- */
-function getEdgeDirection(
-    point: { x: number; y: number },
-    nodeCenter: { x: number; y: number },
-    halfWidth: number,
-    halfHeight: number
-): { x: number; y: number } {
-    const dx = point.x - nodeCenter.x;
-    const dy = point.y - nodeCenter.y;
-
-    // Check which edge the point is on
-    const onLeft = Math.abs(dx + halfWidth) < 1;
-    const onRight = Math.abs(dx - halfWidth) < 1;
-    const onTop = Math.abs(dy + halfHeight) < 1;
-    const onBottom = Math.abs(dy - halfHeight) < 1;
-
-    if (onTop) return { x: 0, y: -1 };
-    if (onBottom) return { x: 0, y: 1 };
-    if (onLeft) return { x: -1, y: 0 };
-    if (onRight) return { x: 1, y: 0 };
-
-    // Fallback: use direction from center
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    return dist > 0 ? { x: dx / dist, y: dy / dist } : { x: 0, y: 1 };
 }
 
 /**

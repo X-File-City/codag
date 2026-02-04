@@ -2,13 +2,13 @@
  * Repo Structure Extractor
  *
  * Extracts structural information from all files in the repo for cross-batch context.
- * Uses AST parsers (acorn for JS/TS, regex for Python) to build comprehensive structure.
+ * Uses tree-sitter for parsing all supported languages.
  * HTTP endpoint extraction is AST-based for reliability.
  */
 
-import * as acorn from 'acorn';
-import * as jsx from 'acorn-jsx';
-const tsParser = require('@typescript-eslint/typescript-estree');
+import { ParserManager } from './tree-sitter/parser-manager';
+import { extractFileStructureFromTree } from './tree-sitter/extractors';
+import type { HttpCallInfo, HttpRouteInfo, ImportInfo, ExtractedFunctionDef } from './tree-sitter/extractors';
 
 // Re-export types for compatibility
 export interface HttpClientCall {
@@ -33,25 +33,6 @@ export interface HttpConnection {
     handler: HttpRouteHandler;
     confidence: 'exact' | 'fuzzy';
 }
-
-// HTTP client method names to detect
-const HTTP_CLIENT_METHODS = ['get', 'post', 'put', 'delete', 'patch'];
-
-// Known LLM API call patterns
-const LLM_CALL_PATTERNS = [
-    /generate_content/,
-    /chat\.completions\.create/,
-    /messages\.create/,
-    /aio\.models\.generate_content/,
-    /\.chat\(/,
-    /\.complete\(/,
-    /\.generate\(/,
-    /openai/i,
-    /anthropic/i,
-    /gemini/i,
-    /cohere/i,
-    /groq/i,
-];
 
 export interface FunctionDef {
     name: string;
@@ -101,60 +82,6 @@ export interface RawRepoStructure {
     crossFileCalls: CrossFileCall[];
 }
 
-function isLLMCall(callPath: string): boolean {
-    return LLM_CALL_PATTERNS.some(p => p.test(callPath));
-}
-
-/**
- * Normalize endpoint path (remove protocol/host, ensure leading slash)
- */
-function normalizeEndpoint(endpoint: string): string {
-    try {
-        if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
-            const url = new URL(endpoint);
-            return url.pathname;
-        }
-
-        // Handle Python f-string interpolation: f"{base_url}/path" → /path
-        const fstringMatch = endpoint.match(/\{[^}]+\}(.+)/);
-        if (fstringMatch && fstringMatch[1]) {
-            endpoint = fstringMatch[1];
-        }
-
-        // Handle template literals with ${...}
-        endpoint = endpoint.replace(/\$\{[^}]+\}/g, ':param');
-        // Ensure starts with /
-        if (!endpoint.startsWith('/')) {
-            endpoint = '/' + endpoint;
-        }
-        return endpoint.replace(/\/+$/, '') || '/';
-    } catch {
-        return endpoint.startsWith('/') ? endpoint : '/' + endpoint;
-    }
-}
-
-/**
- * Check if an endpoint looks like a valid HTTP path
- * Filters out false positives like form field names
- */
-function isValidHttpPath(endpoint: string): boolean {
-    // Must contain a slash
-    if (!endpoint.includes('/')) {
-        return false;
-    }
-
-    // Skip single-segment "paths" that are likely form fields
-    const segments = endpoint.split('/').filter(s => s.length > 0);
-    if (segments.length === 1 && segments[0].length < 10 && !segments[0].includes('-')) {
-        const commonFormFields = ['email', 'name', 'password', 'username', 'phone', 'address', 'message', 'comment', 'title', 'description', 'value', 'data', 'id', 'type', 'status', 'confirmpassword'];
-        if (commonFormFields.includes(segments[0].toLowerCase())) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 /**
  * Match paths for HTTP connection detection
  */
@@ -187,10 +114,6 @@ function matchPaths(
         return 'fuzzy';
     }
 
-    // NOTE: Removed partial/prefix matching as it caused false positives
-    // e.g., client calling /analyze would incorrectly match handler /analyze/metadata-only
-    // Only exact matches and path-param matches are valid
-
     return null;
 }
 
@@ -218,7 +141,7 @@ function resolveImportPath(importSource: string, currentFile: string, allFiles: 
         const basePath = resolved.join('/');
 
         // Try with various extensions
-        const extensions = ['.ts', '.tsx', '.js', '.jsx', '.py', ''];
+        const extensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.c', '.h', '.cpp', '.hpp', '.swift', '.java', '.lua', ''];
         for (const ext of extensions) {
             const fullPath = basePath + ext;
             if (allFiles.some(f => f === fullPath || f.endsWith('/' + fullPath))) {
@@ -236,7 +159,7 @@ function resolveImportPath(importSource: string, currentFile: string, allFiles: 
     if (!importSource.includes('/') && !importSource.startsWith('@')) {
         // Convert dots to slashes for Python module notation
         const modulePath = importSource.replace(/\./g, '/');
-        const extensions = ['.py', '.ts', '.js', ''];
+        const extensions = ['.py', '.ts', '.js', '.go', '.rs', '.c', '.cpp', '.swift', '.java', '.lua', ''];
         for (const ext of extensions) {
             const fullPath = modulePath + ext;
             // Check if any file matches this path (could be in same dir or nested)
@@ -287,8 +210,6 @@ function resolveCrossFileCalls(files: FileStructure[]): CrossFileCall[] {
                     importMap.set(symbol, resolvedPath);
                 }
                 // Also map the module name itself (for "import foo" style)
-                // Extract module name from source: "gemini_client" from "gemini_client"
-                // or "api" from "./api"
                 const moduleName = imp.source.split('/').pop()?.replace(/\.[^.]+$/, '') || imp.source;
                 importMap.set(moduleName, resolvedPath);
             }
@@ -298,9 +219,30 @@ function resolveCrossFileCalls(files: FileStructure[]): CrossFileCall[] {
         for (const fn of file.functions) {
             for (const call of fn.calls) {
                 // Parse call: "gemini_client.analyze_workflow" -> module="gemini_client", func="analyze_workflow"
-                // Also handles: "obj.method", "Class.staticMethod"
                 const dotIndex = call.indexOf('.');
-                if (dotIndex === -1) continue; // Skip simple function calls (same file)
+                if (dotIndex === -1) {
+                    // Direct function call — check if imported from another file
+                    // e.g., import { analyzeWorkflow } from './gemini_client'
+                    // then analyzeWorkflow() should resolve cross-file
+                    const targetFile = importMap.get(call);
+                    if (targetFile && targetFile !== file.path) {
+                        const targetFuncs = exportedFunctions.get(targetFile);
+                        if (targetFuncs && (targetFuncs.has(call) || targetFuncs.size === 0)) {
+                            crossFileCalls.push({
+                                caller: {
+                                    file: file.path,
+                                    function: fn.name,
+                                    line: fn.line
+                                },
+                                callee: {
+                                    file: targetFile,
+                                    function: call
+                                }
+                            });
+                        }
+                    }
+                    continue;
+                }
 
                 const moduleName = call.substring(0, dotIndex);
                 const funcName = call.substring(dotIndex + 1).split('(')[0]; // Remove args if present
@@ -333,578 +275,54 @@ function resolveCrossFileCalls(files: FileStructure[]): CrossFileCall[] {
 }
 
 /**
- * Extract structure from JavaScript/JSX file
+ * Convert tree-sitter extracted structure to FileStructure interface
  */
-function extractJavaScriptStructure(code: string, filePath: string): FileStructure {
-    const functions: FunctionDef[] = [];
-    const exports: string[] = [];
-    const imports: ImportDef[] = [];
-    const exportedNames = new Set<string>();
-
-    try {
-        const parser = acorn.Parser.extend(jsx.default());
-        const ast = parser.parse(code, {
-            ecmaVersion: 2020,
-            sourceType: 'module',
-            locations: true
-        }) as any;
-
-        // First pass: collect exports
-        const walkForExports = (node: any) => {
-            if (!node) return;
-
-            if (node.type === 'ExportNamedDeclaration') {
-                if (node.declaration?.id?.name) {
-                    exportedNames.add(node.declaration.id.name);
-                }
-                if (node.specifiers) {
-                    for (const spec of node.specifiers) {
-                        if (spec.exported?.name) {
-                            exportedNames.add(spec.exported.name);
-                        }
-                    }
-                }
-            }
-
-            if (node.type === 'ExportDefaultDeclaration') {
-                if (node.declaration?.id?.name) {
-                    exportedNames.add(node.declaration.id.name);
-                }
-                exportedNames.add('default');
-            }
-
-            for (const key in node) {
-                if (key === 'loc' || key === 'range') continue;
-                const child = node[key];
-                if (Array.isArray(child)) {
-                    child.forEach(c => walkForExports(c));
-                } else if (child && typeof child === 'object') {
-                    walkForExports(child);
-                }
-            }
-        };
-        walkForExports(ast);
-
-        // Second pass: collect functions and imports
-        let currentFunction: { name: string; calls: string[]; hasLLMCall: boolean; httpCalls: HttpClientCall[] } | null = null;
-
-        const walkNode = (node: any) => {
-            if (!node) return;
-
-            // Track imports
-            if (node.type === 'ImportDeclaration') {
-                const source = node.source.value;
-                const symbols = (node.specifiers || []).map((s: any) =>
-                    s.imported?.name || s.local?.name || 'default'
-                );
-                imports.push({ source, symbols });
-            }
-
-            // Track function definitions
-            if (node.type === 'FunctionDeclaration' ||
-                (node.type === 'VariableDeclarator' &&
-                 (node.init?.type === 'FunctionExpression' || node.init?.type === 'ArrowFunctionExpression'))) {
-
-                const funcName = node.id?.name;
-                if (funcName) {
-                    const funcNode = node.type === 'FunctionDeclaration' ? node : node.init;
-                    currentFunction = { name: funcName, calls: [], hasLLMCall: false, httpCalls: [] };
-
-                    // Walk function body
-                    if (funcNode.body) walkNode(funcNode.body);
-
-                    functions.push({
-                        name: funcName,
-                        line: node.loc?.start.line || 0,
-                        calls: currentFunction.calls,
-                        isExported: exportedNames.has(funcName),
-                        hasLLMCall: currentFunction.hasLLMCall,
-                        params: (funcNode.params || []).map((p: any) => p.name || 'unknown'),
-                        isAsync: funcNode.async || false,
-                        httpCalls: currentFunction.httpCalls
-                    });
-
-                    if (exportedNames.has(funcName)) {
-                        exports.push(funcName);
-                    }
-
-                    currentFunction = null;
-                    return;
-                }
-            }
-
-            // Track function calls
-            if (node.type === 'CallExpression' && currentFunction) {
-                let callee = '';
-                if (node.callee.type === 'Identifier') {
-                    callee = node.callee.name;
-                } else if (node.callee.type === 'MemberExpression') {
-                    callee = getMemberChain(node.callee);
-                }
-
-                if (callee && !currentFunction.calls.includes(callee)) {
-                    currentFunction.calls.push(callee);
-                    if (isLLMCall(callee)) {
-                        currentFunction.hasLLMCall = true;
-                    }
-                }
-
-                // Check for HTTP client calls (e.g., this.client.post('/path'), axios.get('/path'))
-                if (node.callee.type === 'MemberExpression') {
-                    const methodName = node.callee.property?.name?.toLowerCase();
-                    if (HTTP_CLIENT_METHODS.includes(methodName)) {
-                        // Get the first argument (endpoint)
-                        const firstArg = node.arguments?.[0];
-                        let endpoint = '';
-                        if (firstArg?.type === 'Literal' && typeof firstArg.value === 'string') {
-                            endpoint = firstArg.value;
-                        } else if (firstArg?.type === 'TemplateLiteral' && firstArg.quasis?.length === 1) {
-                            // Simple template literal with no expressions
-                            endpoint = firstArg.quasis[0].value?.cooked || '';
-                        }
-
-                        if (endpoint) {
-                            const normalizedPath = normalizeEndpoint(endpoint);
-                            // Filter out false positives (form fields, etc.)
-                            if (isValidHttpPath(normalizedPath)) {
-                                currentFunction.httpCalls.push({
-                                    file: filePath,
-                                    line: node.loc?.start.line || 0,
-                                    function: currentFunction.name,
-                                    method: methodName.toUpperCase(),
-                                    endpoint: endpoint,
-                                    normalizedPath: normalizedPath
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Walk children
-            for (const key in node) {
-                if (key === 'loc' || key === 'range') continue;
-                const child = node[key];
-                if (Array.isArray(child)) {
-                    child.forEach(c => walkNode(c));
-                } else if (child && typeof child === 'object') {
-                    walkNode(child);
-                }
-            }
-        };
-
-        walkNode(ast);
-
-    } catch (error) {
-        console.warn(`Failed to parse JS ${filePath}:`, error);
+function toFileStructure(
+    filePath: string,
+    extracted: {
+        functions: ExtractedFunctionDef[];
+        exports: string[];
+        imports: ImportInfo[];
+        httpRouteHandlers: HttpRouteInfo[];
     }
-
-    return { path: filePath, functions, exports, imports, httpRouteHandlers: [] };
+): FileStructure {
+    return {
+        path: filePath,
+        functions: extracted.functions.map(f => ({
+            name: f.name,
+            line: f.line,
+            calls: f.calls,
+            isExported: f.isExported,
+            hasLLMCall: f.hasLLMCall,
+            params: f.params,
+            isAsync: f.isAsync,
+            httpCalls: f.httpCalls as HttpClientCall[],
+        })),
+        exports: extracted.exports,
+        imports: extracted.imports,
+        httpRouteHandlers: extracted.httpRouteHandlers as HttpRouteHandler[],
+    };
 }
 
 /**
- * Extract structure from TypeScript/TSX file
- */
-function extractTypeScriptStructure(code: string, filePath: string): FileStructure {
-    const functions: FunctionDef[] = [];
-    const exports: string[] = [];
-    const imports: ImportDef[] = [];
-    const exportedNames = new Set<string>();
-
-    try {
-        const isJSX = filePath.endsWith('.tsx') || filePath.endsWith('.jsx');
-        const ast = tsParser.parse(code, {
-            loc: true,
-            range: true,
-            jsx: isJSX
-        });
-
-        // First pass: collect exports
-        const walkForExports = (node: any) => {
-            if (!node || typeof node !== 'object') return;
-
-            if (node.type === 'ExportNamedDeclaration') {
-                if (node.declaration?.id?.name) {
-                    exportedNames.add(node.declaration.id.name);
-                }
-                if (node.declaration?.declarations) {
-                    for (const decl of node.declaration.declarations) {
-                        if (decl.id?.name) exportedNames.add(decl.id.name);
-                    }
-                }
-                if (node.specifiers) {
-                    for (const spec of node.specifiers) {
-                        if (spec.exported?.name) exportedNames.add(spec.exported.name);
-                    }
-                }
-            }
-
-            if (node.type === 'ExportDefaultDeclaration') {
-                if (node.declaration?.id?.name) exportedNames.add(node.declaration.id.name);
-                exportedNames.add('default');
-            }
-
-            for (const key in node) {
-                if (key === 'loc' || key === 'range' || key === 'parent') continue;
-                const child = node[key];
-                if (Array.isArray(child)) {
-                    child.forEach(c => walkForExports(c));
-                } else if (child && typeof child === 'object') {
-                    walkForExports(child);
-                }
-            }
-        };
-        walkForExports(ast);
-
-        // Second pass: collect functions and imports
-        let currentFunction: { name: string; calls: string[]; hasLLMCall: boolean; httpCalls: HttpClientCall[] } | null = null;
-
-        const walkNode = (node: any) => {
-            if (!node || typeof node !== 'object') return;
-
-            // Track imports
-            if (node.type === 'ImportDeclaration' && node.source?.value) {
-                const source = node.source.value;
-                const symbols = (node.specifiers || []).map((s: any) =>
-                    s.imported?.name || s.local?.name || 'default'
-                );
-                imports.push({ source, symbols });
-            }
-
-            // Track function definitions
-            if (node.type === 'FunctionDeclaration' ||
-                node.type === 'MethodDefinition' ||
-                (node.type === 'VariableDeclarator' &&
-                 (node.init?.type === 'FunctionExpression' || node.init?.type === 'ArrowFunctionExpression'))) {
-
-                const funcName = node.id?.name || node.key?.name;
-                if (funcName) {
-                    const funcNode = node.type === 'MethodDefinition' ? node.value :
-                                     node.type === 'VariableDeclarator' ? node.init : node;
-
-                    // Save parent function context (for nested functions)
-                    const parentFunction = currentFunction;
-                    currentFunction = { name: funcName, calls: [], hasLLMCall: false, httpCalls: [] };
-
-                    // Walk function body
-                    if (funcNode?.body) walkNode(funcNode.body);
-
-                    functions.push({
-                        name: funcName,
-                        line: node.loc?.start.line || 0,
-                        calls: currentFunction.calls,
-                        isExported: exportedNames.has(funcName),
-                        hasLLMCall: currentFunction.hasLLMCall,
-                        params: (funcNode?.params || []).map((p: any) => p.name || p.left?.name || 'unknown'),
-                        isAsync: funcNode?.async || false,
-                        httpCalls: currentFunction.httpCalls
-                    });
-
-                    if (exportedNames.has(funcName)) {
-                        exports.push(funcName);
-                    }
-
-                    // Restore parent function context
-                    currentFunction = parentFunction;
-                    return;
-                }
-            }
-
-            // Track function calls
-            if (node.type === 'CallExpression' && currentFunction) {
-                let callee = '';
-                if (node.callee?.type === 'Identifier') {
-                    callee = node.callee.name;
-                } else if (node.callee?.type === 'MemberExpression') {
-                    callee = getMemberChain(node.callee);
-                }
-
-                if (callee && !currentFunction.calls.includes(callee)) {
-                    currentFunction.calls.push(callee);
-                    if (isLLMCall(callee)) {
-                        currentFunction.hasLLMCall = true;
-                    }
-                }
-
-                // Check for HTTP client calls (e.g., this.client.post('/path'), axios.get('/path'))
-                if (node.callee?.type === 'MemberExpression') {
-                    const methodName = node.callee.property?.name?.toLowerCase();
-                    if (HTTP_CLIENT_METHODS.includes(methodName)) {
-                        // Get the first argument (endpoint)
-                        const firstArg = node.arguments?.[0];
-                        let endpoint = '';
-                        if (firstArg?.type === 'Literal' && typeof firstArg.value === 'string') {
-                            endpoint = firstArg.value;
-                        } else if (firstArg?.type === 'TemplateLiteral' && firstArg.quasis?.length === 1) {
-                            endpoint = firstArg.quasis[0].value?.cooked || '';
-                        }
-
-                        if (endpoint) {
-                            const normalizedPath = normalizeEndpoint(endpoint);
-                            // Filter out false positives (form fields, etc.)
-                            if (isValidHttpPath(normalizedPath)) {
-                                currentFunction.httpCalls.push({
-                                    file: filePath,
-                                    line: node.loc?.start.line || 0,
-                                    function: currentFunction.name,
-                                    method: methodName.toUpperCase(),
-                                    endpoint: endpoint,
-                                    normalizedPath: normalizedPath
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Walk children
-            for (const key in node) {
-                if (key === 'loc' || key === 'range' || key === 'parent') continue;
-                const child = node[key];
-                if (Array.isArray(child)) {
-                    child.forEach(c => walkNode(c));
-                } else if (child && typeof child === 'object') {
-                    walkNode(child);
-                }
-            }
-        };
-
-        walkNode(ast);
-
-    } catch (error) {
-        console.warn(`Failed to parse TS ${filePath}:`, error);
-    }
-
-    return { path: filePath, functions, exports, imports, httpRouteHandlers: [] };
-}
-
-/**
- * Extract structure from Python file
- */
-function extractPythonStructure(code: string, filePath: string): FileStructure {
-    const functions: FunctionDef[] = [];
-    const exports: string[] = [];
-    const imports: ImportDef[] = [];
-    const httpRouteHandlers: HttpRouteHandler[] = [];
-
-    const lines = code.split('\n');
-    let decorators: Array<{ text: string; line: number; fullLine: string }> = [];
-
-    // Match function definitions - params may span multiple lines, so we only require the opening paren
-    const funcDefPattern = /^(\s*)(?:async\s+)?def\s+(\w+)\s*\(([^)]*)/;
-    const decoratorPattern = /^(\s*)@(\w+(?:\.\w+)*)/;
-    const importPattern = /^(?:from\s+([\w.]+)\s+)?import\s+(.+)/;
-    const callPattern = /(\w+(?:\.\w+)*)\s*\(/g;
-
-    // Route handler decorator patterns: @app.post("/path"), @router.get("/path")
-    const routeDecoratorPattern = /@(?:app|router)\s*\.\s*(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/i;
-
-    // HTTP client call patterns: httpx.get("/path"), requests.post("/path"), await client.post(f"url")
-    const httpClientPattern = /(?:(?:httpx|requests)\s*\.\s*(get|post|put|delete|patch)|await\s+(?:self\.)?(?:client|session|http_client)\s*\.\s*(get|post|put|delete|patch))\s*\(\s*(?:f)?['"`]([^'"`]+)['"`]/gi;
-
-    // Check for __all__ export list
-    const allMatch = code.match(/__all__\s*=\s*\[([\s\S]*?)\]/);
-    const explicitExports = new Set<string>();
-    if (allMatch) {
-        const items = allMatch[1].match(/['"](\w+)['"]/g);
-        if (items) {
-            items.forEach(item => {
-                const name = item.replace(/['"]/g, '');
-                explicitExports.add(name);
-                exports.push(name);
-            });
-        }
-    }
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const lineNum = i + 1;
-
-        // Track decorators with their full text for route extraction
-        const decoratorMatch = line.match(decoratorPattern);
-        if (decoratorMatch) {
-            decorators.push({ text: decoratorMatch[2], line: lineNum, fullLine: line });
-            continue;
-        }
-
-        // Track imports
-        const importMatch = line.match(importPattern);
-        if (importMatch) {
-            const source = importMatch[1] || importMatch[2].split(',')[0].trim().split(' ')[0];
-            const symbolsPart = importMatch[2];
-            const symbols = symbolsPart.split(',').map(s => s.trim().split(' ')[0]).filter(s => s && s !== 'as');
-            imports.push({ source, symbols });
-            decorators = [];
-            continue;
-        }
-
-        // Track function definitions
-        const funcMatch = line.match(funcDefPattern);
-        if (funcMatch) {
-            const funcIndent = funcMatch[1].length;
-            const funcName = funcMatch[2];
-            // Params may be partial (multi-line functions), extract what we can
-            const paramsStr = funcMatch[3] || '';
-            const params = paramsStr.split(',').map(p => p.trim().split(':')[0].split('=')[0].trim()).filter(p => p && p !== 'self');
-
-            // Check for endpoint decorators and extract route info
-            let hasEndpoint = false;
-            for (const dec of decorators) {
-                const routeMatch = dec.fullLine.match(routeDecoratorPattern);
-                if (routeMatch) {
-                    hasEndpoint = true;
-                    httpRouteHandlers.push({
-                        file: filePath,
-                        line: dec.line,
-                        function: funcName,
-                        method: routeMatch[1].toUpperCase(),
-                        path: routeMatch[2]
-                    });
-                }
-            }
-
-            // Build function data - will collect calls by looking ahead
-            const funcData: FunctionDef = {
-                name: funcName,
-                line: lineNum,
-                calls: [],
-                isExported: !funcName.startsWith('_') || explicitExports.has(funcName) || hasEndpoint,
-                hasLLMCall: false,
-                params,
-                isAsync: line.includes('async def'),
-                httpCalls: []
-            };
-
-            // Look ahead to find function body and calls
-            // First, skip past multi-line function parameters
-            let j = i;
-            let foundBody = false;
-            // Check if the function definition line itself ends with ':'
-            if (line.trim().endsWith(':')) {
-                foundBody = true;
-                j = i + 1;
-            } else {
-                // Multi-line function definition - scan for "):" or just ":"
-                j = i + 1;
-                while (j < lines.length) {
-                    const paramLine = lines[j].trim();
-                    if (paramLine.endsWith(':') || paramLine.startsWith('):') || paramLine === '):') {
-                        foundBody = true;
-                        j++;
-                        break;
-                    }
-                    j++;
-                    if (j - i > 20) break; // Safety limit for malformed code
-                }
-            }
-
-            if (!foundBody) {
-                functions.push(funcData);
-                decorators = [];
-                continue;
-            }
-
-            // Now scan the actual function body
-            while (j < lines.length) {
-                const bodyLine = lines[j];
-                const bodyLineNum = j + 1;
-                const bodyIndent = bodyLine.search(/\S/);
-
-                if (bodyIndent === -1) { j++; continue; } // Empty line
-                // For body, check against indent 0 since func might be at module level
-                // We need at least some indentation to be in the body
-                if (bodyIndent === 0 && !bodyLine.trim().startsWith('#')) break; // Out of function
-
-                // Find regular calls in this line
-                const callMatches = Array.from(bodyLine.matchAll(callPattern));
-                for (const match of callMatches) {
-                    const callee = match[1];
-                    if (!['if', 'for', 'while', 'with', 'print', 'len', 'str', 'int', 'list', 'dict', 'range', 'type', 'super', 'isinstance'].includes(callee)) {
-                        if (!funcData.calls.includes(callee)) {
-                            funcData.calls.push(callee);
-                        }
-                        if (isLLMCall(callee)) {
-                            funcData.hasLLMCall = true;
-                        }
-                    }
-                }
-
-                // Find HTTP client calls in this line
-                const httpMatches = Array.from(bodyLine.matchAll(httpClientPattern));
-                for (const match of httpMatches) {
-                    // Method can be in group 1 (httpx/requests) or group 2 (await client)
-                    const method = (match[1] || match[2]).toUpperCase();
-                    const endpoint = match[3];
-                    const normalizedPath = normalizeEndpoint(endpoint);
-                    if (isValidHttpPath(normalizedPath)) {
-                        funcData.httpCalls.push({
-                            file: filePath,
-                            line: bodyLineNum,
-                            function: funcName,
-                            method,
-                            endpoint,
-                            normalizedPath
-                        });
-                    }
-                }
-
-                j++;
-            }
-
-            functions.push(funcData);
-
-            if (funcData.isExported && !exports.includes(funcName)) {
-                exports.push(funcName);
-            }
-
-            decorators = [];
-            continue;
-        }
-
-        decorators = [];
-    }
-
-    return { path: filePath, functions, exports, imports, httpRouteHandlers };
-}
-
-/**
- * Get the full member expression chain
- */
-function getMemberChain(node: any): string {
-    const parts: string[] = [];
-    let current = node;
-
-    while (current) {
-        if (current.type === 'MemberExpression') {
-            const prop = current.property?.name || current.property?.value;
-            if (prop) parts.unshift(prop);
-            current = current.object;
-        } else if (current.type === 'Identifier') {
-            parts.unshift(current.name);
-            break;
-        } else if (current.type === 'CallExpression') {
-            current = current.callee;
-        } else {
-            break;
-        }
-    }
-
-    return parts.join('.');
-}
-
-/**
- * Extract structure from a single file
+ * Extract structure from a single file using tree-sitter
  */
 export function extractFileStructure(code: string, filePath: string): FileStructure {
-    if (filePath.endsWith('.py')) {
-        return extractPythonStructure(code, filePath);
-    } else if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
-        return extractTypeScriptStructure(code, filePath);
-    } else if (filePath.endsWith('.js') || filePath.endsWith('.jsx')) {
-        return extractJavaScriptStructure(code, filePath);
+    const language = ParserManager.getLanguageForFile(filePath);
+    if (!language || !ParserManager.isAvailable()) {
+        return { path: filePath, functions: [], exports: [], imports: [], httpRouteHandlers: [] };
     }
 
-    return { path: filePath, functions: [], exports: [], imports: [], httpRouteHandlers: [] };
+    try {
+        const manager = ParserManager.get();
+        const tree = manager.parse(code, language, filePath);
+        const result = extractFileStructureFromTree(tree, language, filePath);
+        tree.delete();
+        return toFileStructure(filePath, result);
+    } catch (error) {
+        console.warn(`Failed to parse ${filePath}:`, error);
+        return { path: filePath, functions: [], exports: [], imports: [], httpRouteHandlers: [] };
+    }
 }
 
 /**
@@ -1101,8 +519,6 @@ export function formatHttpConnectionsForPrompt(structure: RawRepoStructure): str
     }
 
     // Deduplicate connections by unique client→handler pair
-    // This prevents the LLM from creating duplicate edges when multiple
-    // code paths call the same endpoint
     const seen = new Set<string>();
     const dedupedConnections = structure.httpConnections.filter(conn => {
         const key = `${conn.client.file}::${conn.client.function}→${conn.handler.file}::${conn.handler.function}`;

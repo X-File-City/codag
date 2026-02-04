@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Removed GitHub Copilot Chat integration and associated VS Code commands
+
 ## 0.1.0 (2025-01-29)
 
 Initial open-source release.

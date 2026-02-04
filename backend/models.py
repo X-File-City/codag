@@ -105,19 +105,10 @@ class FileMetadataResult(BaseModel):
     functions: List[FunctionMetadata]
     edgeLabels: Dict[str, str] = {}  # "fn1→fn2" → label
 
-class MetadataBundle(BaseModel):
-    """Response bundle of metadata for multiple files."""
-    files: List[FileMetadataResult]
-
-
 # Structure condensation models
 class CondenseRequest(BaseModel):
     """Request to condense raw repo structure into workflow-relevant summary."""
     raw_structure: str  # JSON string of tree-sitter extracted structure
-
-class CondenseResponse(BaseModel):
-    """Response with condensed workflow structure."""
-    condensed_structure: str
 
 
 # Cost tracking models

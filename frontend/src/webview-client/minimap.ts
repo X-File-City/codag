@@ -5,6 +5,7 @@ import {
     NODE_WIDTH, NODE_HEIGHT, NODE_HALF_WIDTH, NODE_HALF_HEIGHT,
     TRANSITION_FAST, MINIMAP_PADDING
 } from './constants';
+import { escapeNodeIdForCSS } from './utils';
 
 declare const d3: any;
 
@@ -99,17 +100,6 @@ export function renderMinimap(): void {
         }
     });
 
-    // Collect LLM node positions for checking edge endpoints
-    const llmNodePositions = new Map<string, { x: number; y: number }>();
-    currentGraphData.nodes.forEach((node: any) => {
-        if (node.type === 'llm' && !isNaN(node.x) && !isNaN(node.y)) {
-            llmNodePositions.set(node.id, { x: node.x, y: node.y });
-        }
-    });
-
-    // Collect edge endpoint positions that need connector dots
-    const connectorDots: Array<{ x: number; y: number; isStart: boolean }> = [];
-
     // Render edges using actual ELK routes
     state.elkEdgeRoutes.forEach((route: EdgeRoute, edgeId: string) => {
         const path = generateMinimapEdgePath(route, toMinimapX, toMinimapY);
@@ -118,43 +108,20 @@ export function renderMinimap(): void {
                 .attr('class', 'minimap-edge')
                 .attr('data-edge-id', edgeId)
                 .attr('d', path);
-
-            // Check if endpoints need connector dots (not at LLM nodes)
-            const edge = currentGraphData.edges.find((e: any) => e.id === edgeId);
-            if (edge) {
-                const sourceNode = currentGraphData.nodes.find((n: any) => n.id === edge.source);
-                const targetNode = currentGraphData.nodes.find((n: any) => n.id === edge.target);
-
-                // Add dot at start if source is not an LLM node
-                if (sourceNode && sourceNode.type !== 'llm') {
-                    connectorDots.push({ x: route.startPoint.x, y: route.startPoint.y, isStart: true });
-                }
-                // Add dot at end if target is not an LLM node
-                if (targetNode && targetNode.type !== 'llm') {
-                    connectorDots.push({ x: route.endPoint.x, y: route.endPoint.y, isStart: false });
-                }
-            }
         }
     });
 
-    // Render connector dots at edge endpoints (for non-LLM connections)
-    connectorDots.forEach(dot => {
-        minimapG.append('circle')
-            .attr('class', 'minimap-connector')
-            .attr('cx', toMinimapX(dot.x))
-            .attr('cy', toMinimapY(dot.y))
-            .attr('r', 1.5);
-    });
-
-    // Render only LLM nodes
+    // Render all nodes (small dots to fill edge gaps)
     currentGraphData.nodes.forEach((node: any) => {
-        if (node.type === 'llm' && !isNaN(node.x) && !isNaN(node.y)) {
+        if (!isNaN(node.x) && !isNaN(node.y)) {
+            const radius = node.type === 'llm' ? 2 : 1;
             minimapG.append('circle')
                 .attr('class', `minimap-node ${node.type}`)
                 .attr('cx', toMinimapX(node.x))
                 .attr('cy', toMinimapY(node.y))
-                .attr('r', 3)
-                .attr('data-node-id', node.id);
+                .attr('r', radius)
+                .attr('data-node-id', node.id)
+                .attr('data-file', node.source?.file || '');
         }
     });
 
@@ -316,14 +283,27 @@ export function setupMinimapZoomListener(): void {
  */
 export function pulseMinimapNodes(nodeIds: string[]): void {
     nodeIds.forEach(id => {
-        d3.select(`.minimap-node[data-node-id="${id}"]`)
+        d3.select(`.minimap-node[data-node-id="${escapeNodeIdForCSS(id)}"]`)
             .transition().duration(200)
-            .attr('r', 6)
+            .attr('r', 4)
             .transition().duration(400)
-            .attr('r', 3)
+            .attr('r', 2)
             .transition().duration(200)
-            .attr('r', 6)
+            .attr('r', 4)
             .transition().duration(400)
-            .attr('r', 3);
+            .attr('r', 2);
+    });
+}
+
+/**
+ * Pulse minimap nodes for a specific file (attention-grab animation)
+ * Used when a file is being edited to show where changes are happening
+ */
+export function pulseFileNodes(filePath: string): void {
+    const nodes = d3.selectAll(`.minimap-node[data-file="${filePath}"]`);
+    nodes.each(function() {
+        const node = d3.select(this);
+        node.classed('pulse-attention', true);
+        setTimeout(() => node.classed('pulse-attention', false), 600);
     });
 }

@@ -12,7 +12,11 @@ import {
 } from './providers';
 
 export class WorkflowDetector {
-    private static readonly FILE_EXTENSIONS = ['.py', '.ts', '.js', '.tsx', '.jsx'];
+    private static readonly FILE_EXTENSIONS = [
+        '.py', '.ts', '.js', '.tsx', '.jsx',
+        '.go', '.rs', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp',
+        '.swift', '.java', '.lua',
+    ];
 
     private static async buildExcludePattern(workspaceUri: vscode.Uri): Promise<string> {
         const patterns: string[] = [];

@@ -28,9 +28,6 @@ export let currentlyOpenNodeId: string | null = null;
 // Component state (expanded components - default is collapsed)
 export let expandedComponents: Set<string> = new Set();
 
-// Shared node copies: originalId -> [virtualIds]
-export let sharedNodeCopies: Map<string, string[]> = new Map();
-
 // Per-node dimensions: nodeId -> {width, height}
 export let nodeDimensions: Map<string, { width: number; height: number }> = new Map();
 
@@ -42,7 +39,6 @@ export let linkGroup: any = null;
 export let collapsedGroups: any = null;
 export let groupElements: any = null;
 export let edgePathsContainer: any = null;
-export let sharedArrowsContainer: any = null;
 export let edgeLabelsContainer: any = null;
 export let edgeLabelGroups: any = null;
 export let edgesWithLabels: any[] = [];
@@ -109,11 +105,6 @@ export function setLinkSelections(
     linkGroup = linkGroupSelection;
 }
 
-// Set collapsed groups
-export function setCollapsedGroups(collapsedGroupsSelection: any): void {
-    collapsedGroups = collapsedGroupsSelection;
-}
-
 // Set group elements
 export function setGroupElements(elements: any): void {
     groupElements = elements;
@@ -151,31 +142,6 @@ export function setCurrentlyOpenNodeId(nodeId: string | null): void {
 // Get currently open node
 export function getCurrentlyOpenNodeId(): string | null {
     return currentlyOpenNodeId;
-}
-
-// Set shared node copies map
-export function setSharedNodeCopies(copies: Map<string, string[]>): void {
-    sharedNodeCopies = copies;
-}
-
-// Get shared node copies
-export function getSharedNodeCopies(): Map<string, string[]> {
-    return sharedNodeCopies;
-}
-
-// Set node dimensions map
-export function setNodeDimensions(dimensions: Map<string, { width: number; height: number }>): void {
-    nodeDimensions = dimensions;
-}
-
-// Get stored node dimensions by ID
-export function getStoredNodeDimensions(nodeId: string): { width: number; height: number } | undefined {
-    return nodeDimensions.get(nodeId);
-}
-
-// Set shared arrows container
-export function setSharedArrowsContainer(container: any): void {
-    sharedArrowsContainer = container;
 }
 
 // Set edge labels state

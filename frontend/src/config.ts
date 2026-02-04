@@ -75,8 +75,8 @@ export const CONFIG = {
      * Cache settings
      */
     CACHE: {
-        /** Cache format version - increment when format changes (v10: relative path keys for security/portability) */
-        VERSION: 10,
+        /** Cache format version - increment when format changes (v13: filter symbolic nodes, non-LLM workflows) */
+        VERSION: 13,
         /** Debounce delay for saving cache to disk */
         SAVE_DEBOUNCE_MS: 500,
     },
@@ -92,14 +92,6 @@ export const CONFIG = {
     },
 
     /**
-     * Copilot tool limits
-     */
-    COPILOT: {
-        /** Maximum tool calls per workflow participant turn */
-        MAX_TOOL_CALLS: 5,
-    },
-
-    /**
      * Workflow detection settings
      */
     WORKFLOW: {
@@ -107,6 +99,10 @@ export const CONFIG = {
         MIN_NODES_INITIAL: 5,
         /** Minimum nodes for rendered workflow */
         MIN_NODES_RENDERED: 3,
+        /** Files targeted by edges from N+ distinct workflow groups become shared service hubs */
+        HUB_FILE_THRESHOLD: 3,
+        /** Maximum nodes in a merged workflow (prevents blobbing) */
+        MAX_MERGED_NODES: 20,
     },
 } as const;
 
@@ -114,18 +110,29 @@ export const CONFIG = {
  * Supported file extensions for analysis
  * Add new languages here to support them across the codebase
  */
-export const SUPPORTED_EXTENSIONS = ['.py', '.ts', '.tsx', '.js', '.jsx'] as const;
+export const SUPPORTED_EXTENSIONS = [
+    '.py', '.ts', '.tsx', '.js', '.jsx',
+    '.go', '.rs', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp',
+    '.swift', '.java', '.lua',
+] as const;
 
 /**
  * Extended file extensions (including less common variants)
  */
-export const ALL_EXTENSIONS = ['.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'] as const;
+export const ALL_EXTENSIONS = [
+    '.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+    '.go', '.rs', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hxx', '.hh',
+    '.swift', '.java', '.lua',
+] as const;
 
 /**
  * File/directory patterns to exclude from analysis
  * Based on gitdiagram's aggressive filtering + common patterns
  */
 export const EXCLUDE_PATTERNS = [
+    // Hidden directories (dotfiles)
+    '**/.*/**',
+
     // Package managers & dependencies
     '**/node_modules/**',
     '**/vendor/**',
@@ -195,6 +202,20 @@ export const EXCLUDE_PATTERNS = [
     '**/__mocks__/**',
     '**/fixtures/**',
 
+    // Test file patterns (filename-based, not just directory-based)
+    '**/test_*.py',
+    '**/*_test.py',
+    '**/*.test.ts',
+    '**/*.test.js',
+    '**/*.test.tsx',
+    '**/*.test.jsx',
+    '**/*.spec.ts',
+    '**/*.spec.js',
+    '**/*.spec.tsx',
+    '**/*.spec.jsx',
+    '**/*_test.go',
+    '**/conftest.py',
+
     // Generated/compiled files
     '**/*.min.js',
     '**/*.min.css',
@@ -237,6 +258,45 @@ export const KEYWORD_BLACKLISTS = {
         'if', 'else', 'for', 'while', 'switch', 'catch', 'return',
         'const', 'let', 'var', 'new', 'await', 'this', 'constructor',
         'super', 'typeof', 'instanceof', 'delete', 'void',
+    ],
+    /** Go builtins to ignore */
+    go: [
+        'fmt', 'log', 'make', 'len', 'cap', 'append', 'delete',
+        'copy', 'close', 'panic', 'recover', 'new', 'error',
+        'print', 'println',
+    ],
+    /** Rust builtins/macros to ignore */
+    rust: [
+        'println', 'eprintln', 'format', 'vec', 'panic', 'todo',
+        'unimplemented', 'assert', 'debug_assert', 'dbg', 'write',
+        'writeln', 'unreachable', 'cfg',
+    ],
+    /** C/C++ builtins to ignore */
+    c: [
+        'printf', 'fprintf', 'sprintf', 'snprintf', 'scanf',
+        'malloc', 'calloc', 'realloc', 'free',
+        'memcpy', 'memset', 'memmove', 'strlen', 'strcmp', 'strcat',
+        'strcpy', 'sizeof', 'assert', 'exit', 'abort',
+    ],
+    /** Swift builtins to ignore */
+    swift: [
+        'print', 'debugPrint', 'fatalError', 'precondition',
+        'preconditionFailure', 'assert', 'assertionFailure',
+        'type', 'Mirror', 'dump',
+    ],
+    /** Java builtins to ignore */
+    java: [
+        'System', 'String', 'Integer', 'Boolean', 'Double', 'Float',
+        'Long', 'Short', 'Byte', 'Character', 'Math', 'Objects',
+        'Arrays', 'Collections', 'Optional',
+    ],
+    /** Lua builtins to ignore */
+    lua: [
+        'print', 'type', 'tostring', 'tonumber', 'error', 'assert',
+        'pcall', 'xpcall', 'select', 'pairs', 'ipairs', 'next',
+        'rawget', 'rawset', 'rawequal', 'rawlen', 'setmetatable',
+        'getmetatable', 'require', 'unpack', 'table', 'string',
+        'math', 'io', 'os', 'coroutine', 'debug',
     ],
 } as const;
 

@@ -195,29 +195,6 @@ body {
     transition: stroke 0.2s ease, stroke-width 0.2s ease;
     pointer-events: none;
 }
-.entry-icon, .exit-icon {
-    pointer-events: none;
-}
-/* Shared node badge */
-.shared-badge {
-    pointer-events: none;
-    opacity: 0.8;
-}
-.shared-badge-icon {
-    color: var(--vscode-descriptionForeground);
-}
-.shared-badge-text {
-    font-family: var(--vscode-font-family);
-}
-/* Shared copy arrows (for hover on shared nodes) */
-.shared-copy-arrow {
-    fill: none;
-    stroke: var(--vscode-textLink-foreground);
-    stroke-width: 2px;
-    stroke-dasharray: 6, 4;
-    stroke-opacity: 0.7;
-    pointer-events: none;
-}
 .node-selection-indicator {
     stroke: var(--vscode-textLink-foreground);
     stroke-width: 5px;
@@ -416,92 +393,162 @@ body {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
 }
-/* Backend error overlay */
-.backend-error {
+/* Error overlay (shared between backend error, API key error, etc.) */
+.error-overlay {
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 4000;
-    background: var(--vscode-editor-background);
+    z-index: 9999;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+    animation: tutorial-fade-in 0.3s ease;
 }
 
-.backend-error-card {
+.error-overlay-card {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
+    gap: 14px;
     max-width: 420px;
-    padding: 32px;
-    border: 1px solid var(--vscode-panel-border);
+    padding: 40px 32px 32px;
     border-radius: 12px;
     background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
     text-align: center;
+    animation: tutorial-slide-up 0.3s ease;
 }
 
-.backend-error-icon {
-    color: #f44336;
+.error-overlay-icon {
     margin-bottom: 4px;
 }
 
-.backend-error-title {
-    font-size: 18px;
+.error-overlay-icon--error {
+    color: #f44336;
+}
+
+.error-overlay-icon--key {
+    color: #ff9800;
+}
+
+.error-overlay-title {
+    font-size: 20px;
     font-weight: 600;
     color: var(--vscode-editor-foreground);
 }
 
-.backend-error-desc {
-    font-size: 13px;
+.error-overlay-desc {
+    font-size: 14px;
     color: var(--vscode-descriptionForeground);
+    line-height: 1.6;
+}
+
+.error-overlay-desc code {
+    font-family: var(--vscode-editor-font-family, monospace);
+    background: var(--vscode-textCodeBlock-background, rgba(255, 255, 255, 0.05));
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+
+.error-overlay-steps {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+}
+
+.error-overlay-step {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--vscode-editor-foreground);
     line-height: 1.5;
 }
 
-.backend-error-commands {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
+.error-overlay-step code {
+    font-family: var(--vscode-editor-font-family, monospace);
+    background: var(--vscode-textCodeBlock-background, rgba(255, 255, 255, 0.05));
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
 }
 
-.backend-error-commands code {
+.error-overlay-step-num {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.error-overlay-code {
     display: block;
     width: 100%;
     padding: 8px 12px;
+    margin-left: 32px;
     border-radius: 6px;
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 13px;
-    background: var(--vscode-textCodeBlock-background, rgba(255,255,255,0.05));
+    background: var(--vscode-textCodeBlock-background, rgba(255, 255, 255, 0.05));
     color: var(--vscode-editor-foreground);
     user-select: all;
+    box-sizing: border-box;
+    width: calc(100% - 32px);
 }
 
-.backend-error-or {
+.error-overlay-commands {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    margin-left: 32px;
+    width: calc(100% - 32px);
+}
+
+.error-overlay-commands .error-overlay-code {
+    margin-left: 0;
+    width: 100%;
+}
+
+.error-overlay-or {
     font-size: 12px;
     color: var(--vscode-descriptionForeground);
+    text-align: center;
 }
 
-.backend-error-hint {
+.error-overlay-link {
+    color: #7c83ff;
+    text-decoration: underline;
+}
+
+.error-overlay-hint {
     font-size: 12px;
     color: var(--vscode-descriptionForeground);
     line-height: 1.5;
-    margin-top: 4px;
 }
 
-.backend-error-hint code {
+.error-overlay-hint code {
     font-family: var(--vscode-editor-font-family, monospace);
-    background: var(--vscode-textCodeBlock-background, rgba(255,255,255,0.05));
+    background: var(--vscode-textCodeBlock-background, rgba(255, 255, 255, 0.05));
     padding: 1px 4px;
     border-radius: 3px;
+    font-size: 11px;
 }
 
-.backend-error-retry {
-    margin-top: 8px;
-    padding: 8px 24px;
+.error-overlay-btn {
+    margin-top: 6px;
+    padding: 10px 32px;
     border: none;
     border-radius: 6px;
     background: var(--vscode-button-background);
@@ -509,9 +556,10 @@ body {
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
+    transition: background 0.15s;
 }
 
-.backend-error-retry:hover {
+.error-overlay-btn:hover {
     background: var(--vscode-button-hoverBackground);
 }
 
@@ -639,6 +687,7 @@ body {
 .type-badge.memory { background: #4DB6AC20; color: #4DB6AC; }
 .type-badge.parser { background: #A1887F20; color: #A1887F; }
 .type-badge.output { background: #90A4AE20; color: #90A4AE; }
+.type-badge.reference { background: #7c3aed20; color: #7c3aed; }
 .source-link {
     color: var(--vscode-textLink-foreground);
     text-decoration: none;
@@ -696,16 +745,6 @@ body {
     stroke-width: 2px;
     opacity: 0.9;
     pointer-events: none;
-}
-.collapsed-group-node {
-    cursor: pointer;
-}
-.collapsed-group-node:hover rect {
-    stroke-width: 4px !important;
-    filter: brightness(1.2) drop-shadow(0 4px 12px rgba(0,0,0,0.4)) !important;
-}
-.collapsed-group-node:hover text {
-    opacity: 1 !important;
 }
 
 /* Workflow Directory */
@@ -1285,6 +1324,21 @@ body {
     background: var(--vscode-button-hoverBackground);
 }
 
+.file-picker-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.file-picker-btn-danger:disabled {
+    background: #5a1f1f;
+    border-color: #5a1f1f;
+}
+
+.file-picker-btn-primary:disabled {
+    background: var(--vscode-button-secondaryBackground, rgba(255,255,255,0.1));
+    border-color: var(--vscode-button-secondaryBackground, rgba(255,255,255,0.1));
+}
+
 /* Custom checkbox styling */
 .file-picker-checkbox {
     position: relative;
@@ -1387,6 +1441,18 @@ body {
 @keyframes minimap-pulse {
     0%, 100% { opacity: 0.6; }
     50% { opacity: 1; }
+}
+
+/* Attention pulse for minimap nodes when file is being edited */
+.minimap-node.pulse-attention {
+    animation: attention-pulse 0.3s ease-out 2;
+    transform-origin: center;
+    transform-box: fill-box;
+}
+
+@keyframes attention-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(2); }
 }
 
 /* Pending metadata state - nodes awaiting LLM labels */
@@ -1570,5 +1636,82 @@ body {
 .tutorial-skip:hover {
     color: var(--vscode-foreground);
     background: var(--vscode-input-background);
+}
+
+/* ===== EXPORT NOTIFICATIONS ===== */
+.notification {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--vscode-foreground);
+    transform: translateY(20px);
+    opacity: 0;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    pointer-events: none;
+}
+
+.notification-visible {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.notification-icon {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+.notification-success {
+    border-color: #4CAF50;
+}
+
+.notification-success .notification-icon {
+    background: #4CAF50;
+    color: white;
+}
+
+.notification-error {
+    border-color: #F44336;
+}
+
+.notification-error .notification-icon {
+    background: #F44336;
+    color: white;
+}
+
+/* ===== WORKFLOW EXPORT BUTTON ===== */
+.workflow-export-btn {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    pointer-events: all;
+}
+
+/* Show title and export button when hovering workflow group (CSS :hover or JS .hover class) */
+.workflow-group:hover .group-title-expanded,
+.workflow-group:hover .workflow-export-btn,
+.workflow-group.hover .group-title-expanded,
+.workflow-group.hover .workflow-export-btn {
+    opacity: 1;
+}
+
+.workflow-export-btn:hover circle {
+    stroke-opacity: 1;
+}
+
+.workflow-export-btn:active circle {
+    fill-opacity: 0.1;
 }
 

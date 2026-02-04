@@ -31,6 +31,8 @@ interface FileCache {
     nodes: WorkflowNode[];           // Nodes from this file (deterministic IDs)
     internalEdges: WorkflowEdge[];   // Edges within this file
     timestamp: number;
+    /** Per-node workflow assignments from LLM (nodeId → { id, name }) */
+    nodeWorkflows?: Record<string, { id: string; name: string }>;
 }
 
 /**
@@ -88,6 +90,14 @@ export class CacheManager {
     private saveDebounceMs = 500;
     private maxSaveWaitMs = 5000;
     private lastSaveTime = 0;
+
+    // Cached merged graph for sync access (instant feedback)
+    private lastMergedGraph: WorkflowGraph | null = null;
+
+    // Multi-batch analysis state tracking
+    // Prevents premature workflow filtering during first analysis
+    private analysisInProgress: boolean = false;
+    private pendingBatchCount: number = 0;
 
     constructor(private context: vscode.ExtensionContext) {
         this.initPromise = this.initializeCache();
@@ -195,6 +205,60 @@ export class CacheManager {
         }
     }
 
+    /**
+     * Force immediate save of any pending changes.
+     * Call this on extension deactivation to ensure cache is persisted.
+     */
+    async flush(): Promise<void> {
+        if (this.saveTimer) {
+            clearTimeout(this.saveTimer);
+            this.saveTimer = null;
+        }
+        await this.saveNow();
+    }
+
+    // =========================================================================
+    // Multi-Batch Analysis State
+    // =========================================================================
+
+    /**
+     * Start tracking a multi-batch analysis.
+     * During multi-batch analysis, workflow filtering is deferred until all batches complete.
+     * This prevents nodes from being filtered out before their cross-batch connections are established.
+     */
+    startMultiBatchAnalysis(totalBatches: number): void {
+        this.analysisInProgress = true;
+        this.pendingBatchCount = totalBatches;
+    }
+
+    /**
+     * Mark a batch as completed.
+     * When all batches complete, analysis state resets and full filtering is applied.
+     */
+    batchCompleted(): void {
+        if (this.pendingBatchCount > 0) {
+            this.pendingBatchCount--;
+        }
+        if (this.pendingBatchCount === 0) {
+            this.analysisInProgress = false;
+        }
+    }
+
+    /**
+     * Check if multi-batch analysis is complete.
+     */
+    isAnalysisComplete(): boolean {
+        return !this.analysisInProgress;
+    }
+
+    /**
+     * Reset analysis state (e.g., on error or cancellation).
+     */
+    resetAnalysisState(): void {
+        this.analysisInProgress = false;
+        this.pendingBatchCount = 0;
+    }
+
     // =========================================================================
     // Hashing
     // =========================================================================
@@ -215,10 +279,24 @@ export class CacheManager {
 
     /**
      * Hash content using AST-aware method (ignores comments, whitespace)
+     *
+     * Falls back to raw content hash when:
+     * - Tree-sitter is unavailable (parser not initialized)
+     * - Analysis returns empty results (no functions/imports detected)
+     *
+     * This ensures consistent hashing between store and check operations,
+     * even if tree-sitter initialization state differs between sessions.
      */
     hashContentAST(content: string, filePath: string): string {
         try {
             const analysis = this.staticAnalyzer.analyze(content, filePath);
+
+            // If analysis returned empty (tree-sitter unavailable or no code),
+            // fall back to raw content hash for consistency
+            if (analysis.locations.length === 0 && analysis.imports.length === 0) {
+                return this.hashContent(content);
+            }
+
             const normalized = {
                 imports: analysis.imports.filter(isLLMImport).sort(),
                 variables: Array.from(analysis.llmRelatedVariables).sort(),
@@ -345,12 +423,16 @@ export class CacheManager {
         };
 
         // Filter nodes to only those for files in this batch
-        // LLM sometimes creates nodes for files mentioned in HTTP connections context
+        // LLM sometimes creates symbolic nodes (Frontend_UI, Telnyx_API) — skip them.
+        // Also skip nodes for files not in this batch.
         const filteredNodes: WorkflowNode[] = [];
         const skippedNodes: WorkflowNode[] = [];
         for (const node of graph.nodes) {
             const file = node.source?.file || 'unknown';
-            if (file === 'unknown' || isInBatch(file)) {
+            // Skip symbolic/unknown nodes — they're not real code locations
+            if (file === 'unknown' || !file.includes('.')) {
+                skippedNodes.push(node);
+            } else if (isInBatch(file)) {
                 filteredNodes.push(node);
             } else {
                 skippedNodes.push(node);
@@ -399,6 +481,8 @@ export class CacheManager {
             const resolvedTargetFile = targetFile || extractFileFromId(edge.target);
 
             if (!resolvedSourceFile) continue;
+            // Skip pure garbage edges (source is "--" etc.)
+            if (resolvedSourceFile === 'unknown' && resolvedTargetFile === 'unknown') continue;
 
             if (resolvedSourceFile === resolvedTargetFile) {
                 // Internal edge
@@ -420,10 +504,10 @@ export class CacheManager {
         }
 
         // Helper to find content by matching path suffix
-        // Handles mismatch between paths - either direction (full↔relative)
-        const findContent = (nodePath: string): string | undefined => {
+        // Returns both content AND the canonical key (for consistent cache storage)
+        const findContentWithKey = (nodePath: string): { content: string; key: string } | undefined => {
             // Try exact match first
-            if (contents[nodePath]) return contents[nodePath];
+            if (contents[nodePath]) return { content: contents[nodePath], key: nodePath };
 
             // Normalize both paths for comparison
             const normalizedNode = nodePath.replace(/\\/g, '/').replace(/^\//, '');
@@ -432,38 +516,71 @@ export class CacheManager {
                 const normalizedKey = contentKey.replace(/\\/g, '/').replace(/^\//, '');
 
                 // Exact match after normalization
-                if (normalizedNode === normalizedKey) return content;
+                if (normalizedNode === normalizedKey) return { content, key: contentKey };
 
                 // Either path could be full or relative, so check both directions
                 // Case 1: nodePath is full, contentKey is relative
-                if (normalizedNode.endsWith('/' + normalizedKey)) return content;
-                if (normalizedNode.endsWith(normalizedKey)) return content;
+                if (normalizedNode.endsWith('/' + normalizedKey)) return { content, key: contentKey };
+                if (normalizedNode.endsWith(normalizedKey)) return { content, key: contentKey };
 
-                // Case 2: contentKey is full, nodePath is relative
-                if (normalizedKey.endsWith('/' + normalizedNode)) return content;
-                if (normalizedKey.endsWith(normalizedNode)) return content;
+                // Case 2: contentKey is full, nodePath is relative (LLM returned short path)
+                if (normalizedKey.endsWith('/' + normalizedNode)) return { content, key: contentKey };
+                if (normalizedKey.endsWith(normalizedNode)) return { content, key: contentKey };
             }
 
             return undefined;
         };
 
-        // Store per-file (normalize to full paths for consistent cache keys)
+        // Build per-node workflow mapping from LLM-assigned workflows
+        // A single file can have nodes in multiple workflows (e.g., gemini.ts serves 5 workflows)
+        const nodeToWorkflow = new Map<string, { id: string; name: string }>();
+        for (const wf of graph.workflows || []) {
+            for (const nodeId of wf.nodeIds) {
+                if (!nodeToWorkflow.has(nodeId)) {
+                    nodeToWorkflow.set(nodeId, { id: wf.id, name: wf.name });
+                }
+            }
+        }
+
+        // Store per-file using CONTENT key (not LLM's path) for consistent cache lookup
         // Store ALL nodes returned by LLM - filtering happens post-merge based on connectivity
-        console.log(`[CACHE] Storing batch results for ${nodesByFile.size} files with nodes:`);
+        // Track which content keys we've cached (for the empty-files loop below)
+        const cachedContentKeys = new Set<string>();
         for (const [file, nodes] of nodesByFile) {
-            const content = findContent(file);
-            if (!content) {
+            const match = findContentWithKey(file);
+            if (!match) {
                     continue;
             }
 
-            const normalizedPath = this.toRelativePath(file);
-            const hash = this.hashContentAST(content, file);
+            // Use the content key for storage (matches how checkFiles looks up)
+            const normalizedPath = this.toRelativePath(match.key);
+            cachedContentKeys.add(normalizedPath);
+            const hash = this.hashContentAST(match.content, match.key);
+
+            // Build per-node workflow assignments for this file
+            // IMPORTANT: Preserve existing LLM-assigned nodeWorkflows if no new assignments provided
+            // This prevents incremental updates from losing workflow assignments
+            const existingCache = this.files[normalizedPath];
+            const existingNodeWfs = existingCache?.nodeWorkflows || {};
+
+            const nodeWfs: Record<string, { id: string; name: string }> = {};
+            for (const n of nodes) {
+                const wfAssignment = nodeToWorkflow.get(n.id);
+                if (wfAssignment) {
+                    // New assignment from graph.workflows
+                    nodeWfs[n.id] = wfAssignment;
+                } else if (existingNodeWfs[n.id]) {
+                    // Preserve existing assignment (from previous LLM analysis)
+                    nodeWfs[n.id] = existingNodeWfs[n.id];
+                }
+            }
 
             this.files[normalizedPath] = {
                 hash,
                 nodes,
                 internalEdges: internalEdgesByFile.get(file) || [],
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                nodeWorkflows: Object.keys(nodeWfs).length > 0 ? nodeWfs : undefined
             };
         }
 
@@ -472,24 +589,10 @@ export class CacheManager {
         const emptyFiles: string[] = [];
         for (const [filePath, content] of Object.entries(contents)) {
             // Check if already cached by the node-based loop above
-            // Both nodesByFile (from node.source.file) and contents use relative paths now
-            let alreadyCached = false;
-            const normalizedContent = filePath.replace(/\\/g, '/').replace(/^\//, '');
-            for (const nodeFilePath of nodesByFile.keys()) {
-                const normalizedNode = nodeFilePath.replace(/\\/g, '/');
-                // Check both directions since either could be full or relative
-                if (normalizedNode === normalizedContent ||
-                    normalizedNode.endsWith('/' + normalizedContent) ||
-                    normalizedContent.endsWith('/' + normalizedNode)) {
-                    alreadyCached = true;
-                    break;
-                }
-            }
-            if (alreadyCached) continue;
+            const normalizedPath = this.toRelativePath(filePath);
+            if (cachedContentKeys.has(normalizedPath)) continue;
 
             // Cache as empty (no nodes, no edges)
-            // Normalize to full path for consistent cache keys
-            const normalizedPath = this.toRelativePath(filePath);
             const shortPath = filePath.split('/').slice(-2).join('/');
             emptyFiles.push(shortPath);
             this.files[normalizedPath] = {
@@ -499,44 +602,57 @@ export class CacheManager {
                 timestamp: Date.now()
             };
         }
-        if (emptyFiles.length > 0) {
-            console.log(`[CACHE] Files with NO nodes (LLM returned NO_LLM_WORKFLOW): ${emptyFiles.length}`);
-            for (const f of emptyFiles.slice(0, 10)) {
-                console.log(`[CACHE]   ∅ ${f}`);
-            }
-            if (emptyFiles.length > 10) {
-                console.log(`[CACHE]   ... and ${emptyFiles.length - 10} more`);
-            }
-        }
-
         // Clean up old cross-file edges from files being updated
         // This prevents stale edges when file structure changes
-        const updatedFiles = new Set(Object.keys(contents));
+        // IMPORTANT: Normalize paths to match stored edge.sourceFile format (relative paths)
+        const updatedFilesNormalized = new Set(
+            Object.keys(contents).map(p => this.toRelativePath(p))
+        );
         this.crossFileEdges = this.crossFileEdges.filter(
-            edge => !updatedFiles.has(edge.sourceFile)
+            edge => !updatedFilesNormalized.has(edge.sourceFile)
         );
 
         // Merge new cross-file edges (dedupe, keep newest)
         this.mergeCrossFileEdges(newCrossFileEdges);
 
-        // Extract workflow info
+        // Extract workflow info - ONLY for workflows that have nodes in this batch
+        // This prevents incremental updates from corrupting workflow metadata for unrelated files
+        const batchFilesNormalized = new Set(
+            Object.keys(contents).map(p => this.toRelativePath(p))
+        );
         for (const wf of graph.workflows || []) {
-            const primaryFile = this.findPrimaryFile(wf.nodeIds, nodeToFile);
-            this.workflows[wf.id] = {
-                id: wf.id,
-                name: wf.name,
-                description: wf.description,
-                primaryFile
-            };
+            // Check if this workflow has nodes in the current batch
+            const workflowHasBatchNodes = wf.nodeIds.some(nodeId => {
+                const node = nodeById.get(nodeId);
+                if (!node?.source?.file) return false;
+                const nodeFile = this.toRelativePath(node.source.file);
+                return batchFilesNormalized.has(nodeFile);
+            });
+
+            if (workflowHasBatchNodes) {
+                const primaryFile = this.findPrimaryFile(wf.nodeIds, nodeToFile);
+                // Only update if we can determine the primary file from this batch
+                if (primaryFile !== 'unknown') {
+                    this.workflows[wf.id] = {
+                        id: wf.id,
+                        name: wf.name,
+                        description: wf.description,
+                        primaryFile
+                    };
+                }
+            }
         }
 
-        // Clean up stale workflow metadata - remove workflows whose primary file has no nodes
+        // Clean up stale workflow metadata - but ONLY for workflows whose primary file
+        // is in this batch AND now has no nodes. Don't touch workflows from other files.
         for (const [wfId, wf] of Object.entries(this.workflows)) {
             if (wf.primaryFile === 'unknown') {
                 delete this.workflows[wfId];
                 continue;
             }
             const normalizedPrimary = this.toRelativePath(wf.primaryFile);
+            // Only clean up if the primary file was in this batch
+            if (!batchFilesNormalized.has(normalizedPrimary)) continue;
             const fileCache = this.files[normalizedPrimary];
             if (!fileCache || fileCache.nodes.length === 0) {
                 delete this.workflows[wfId];
@@ -638,6 +754,14 @@ export class CacheManager {
         }
         allNodes.push(...nodeById.values());
 
+        // Sanitize purely-numeric labels (LLM sometimes returns sequence numbers instead of names).
+        // Replace with the function name from source metadata.
+        for (const node of allNodes) {
+            if (/^\d+$/.test(node.label) && node.source?.function) {
+                node.label = node.source.function.replace(/\(\)$/, '');
+            }
+        }
+
         if (allNodes.length === 0) return null;
 
         // Add valid cross-file edges with fuzzy ID resolution
@@ -645,8 +769,87 @@ export class CacheManager {
         // but actual node IDs have full paths (e.g., "dir/file.py::func")
         const lookup = buildNodeLookup(allNodes);
         for (const edge of this.crossFileEdges) {
-            const resolvedSource = findMatchingNodeId(edge.sourceNodeId, lookup);
-            const resolvedTarget = findMatchingNodeId(edge.targetNodeId, lookup);
+            let resolvedSource = findMatchingNodeId(edge.sourceNodeId, lookup);
+            let resolvedTarget = findMatchingNodeId(edge.targetNodeId, lookup);
+
+            // Create stub node for cross-file edge targets that don't exist as cached nodes.
+            if (resolvedSource && !resolvedTarget) {
+                const targetId = edge.targetNodeId;
+                const parts = targetId.split('::');
+                const isRealFile = parts.length >= 2 && /\.\w+$/.test(parts[0]);
+
+                let stubNode: WorkflowNode | null = null;
+
+                if (isRealFile) {
+                    // Real file::function target (endpoint in file with no LLM workflows)
+                    const file = parts[0];
+                    const func = parts[1];
+                    const lineFromId = parts[2] ? parseInt(parts[2], 10) : NaN;
+                    stubNode = {
+                        id: targetId,
+                        label: func,
+                        type: 'step',
+                        source: { file, line: isNaN(lineFromId) ? 1 : lineFromId, function: func }
+                    };
+                } else if (targetId !== '--' && targetId.length > 1) {
+                    // Symbolic target = external service boundary (Telnyx_API, Frontend_UI, etc.)
+                    // Point source to the CALLER's code location so clicking opens where the call is made
+                    const sourceNode = nodeById.get(resolvedSource);
+                    const callerFile = sourceNode?.source?.file || '';
+                    const callerLine = sourceNode?.source?.line || 1;
+                    const callerFunc = sourceNode?.source?.function || '';
+                    const cleanLabel = targetId
+                        .replace(/_/g, ' ')
+                        .replace(/([a-z])([A-Z])/g, '$1 $2')
+                        .trim();
+                    stubNode = {
+                        id: targetId,
+                        label: cleanLabel,
+                        type: 'step',
+                        source: { file: callerFile, line: callerLine, function: callerFunc }
+                    };
+                }
+
+                if (stubNode) {
+                    allNodes.push(stubNode);
+                    nodeById.set(targetId, stubNode);
+                    nodeIds.add(targetId);
+                    lookup.exact.add(targetId);
+                    lookup.exact.add(targetId.toLowerCase());
+                    resolvedTarget = targetId;
+                }
+            }
+
+            // Same for symbolic sources (external service calling INTO the repo)
+            if (!resolvedSource && resolvedTarget) {
+                const sourceId = edge.sourceNodeId;
+                const parts = sourceId.split('::');
+                const isRealFile = parts.length >= 2 && /\.\w+$/.test(parts[0]);
+
+                if (!isRealFile && sourceId !== '--' && sourceId.length > 1) {
+                    const targetNode = nodeById.get(resolvedTarget);
+                    const targetFile = targetNode?.source?.file || '';
+                    const targetLine = targetNode?.source?.line || 1;
+                    const targetFunc = targetNode?.source?.function || '';
+                    const cleanLabel = sourceId
+                        .replace(/_/g, ' ')
+                        .replace(/([a-z])([A-Z])/g, '$1 $2')
+                        .trim();
+                    const stubNode: WorkflowNode = {
+                        id: sourceId,
+                        label: cleanLabel,
+                        type: 'step',
+                        source: { file: targetFile, line: targetLine, function: targetFunc }
+                    };
+                    allNodes.push(stubNode);
+                    nodeById.set(sourceId, stubNode);
+                    nodeIds.add(sourceId);
+                    lookup.exact.add(sourceId);
+                    lookup.exact.add(sourceId.toLowerCase());
+                    resolvedSource = sourceId;
+                }
+            }
+
             if (resolvedSource && resolvedTarget) {
                 allEdges.push({
                     source: resolvedSource,
@@ -659,19 +862,435 @@ export class CacheManager {
         // Build workflows from connectivity
         const workflows = this.computeWorkflows(allNodes, allEdges);
 
-        return {
-            nodes: allNodes,
-            edges: allEdges,
+        // Filter nodes and edges to only include those in a workflow
+        // This prevents ELK layout errors from edges referencing filtered-out nodes
+        // IMPORTANT: During multi-batch analysis, defer filtering until all batches complete
+        // to prevent nodes from being filtered out before cross-batch connections are established
+        let filteredNodes: WorkflowNode[];
+        let filteredEdges: WorkflowEdge[];
+
+        if (this.analysisInProgress) {
+            // During multi-batch analysis, return ALL nodes/edges
+            // Filtering will happen on final merge when all batches complete
+            filteredNodes = allNodes;
+            filteredEdges = allEdges;
+        } else {
+            // Analysis complete - apply workflow filtering
+            const workflowNodeIds = new Set(workflows.flatMap(wf => wf.nodeIds));
+            filteredNodes = allNodes.filter(n => workflowNodeIds.has(n.id));
+            // Keep edges where both endpoints are in workflows (including cross-workflow edges)
+            filteredEdges = allEdges.filter(e =>
+                workflowNodeIds.has(e.source) && workflowNodeIds.has(e.target)
+            );
+        }
+
+        const result: WorkflowGraph = {
+            nodes: filteredNodes,
+            edges: filteredEdges,
             llms_detected: Array.from(llmsDetected),
             workflows
         };
+
+        // Cache for sync access (instant feedback during file changes)
+        this.lastMergedGraph = result;
+
+        return result;
     }
 
     /**
-     * Compute workflows from graph connectivity, preserving LLM-provided names
+     * Synchronously get the last known merged graph (for instant feedback).
+     * Returns null if no graph has been computed yet.
+     * Use this for immediate UI responses before async operations complete.
+     */
+    getCachedGraphSync(): WorkflowGraph | null {
+        return this.lastMergedGraph;
+    }
+
+    /**
+     * Compute workflows using LLM-assigned workflow names per file,
+     * with hub detection for end-to-end shared service inclusion.
+     * Falls back to connectivity-based grouping if no assignments exist.
      */
     private computeWorkflows(nodes: WorkflowNode[], edges: WorkflowEdge[]): WorkflowMetadata[] {
-        // Build adjacency list
+        // Phase 1: Group nodes by stored workflow name (per-node from LLM analysis)
+        const workflowGroups = new Map<string, { id: string; name: string; description?: string; nodeIds: string[] }>();
+        let hasAnyAssignment = false;
+
+        for (const node of nodes) {
+            const file = node.source?.file;
+            if (!file) continue;
+            const normalizedFile = this.toRelativePath(file);
+            const cached = this.files[normalizedFile];
+            const wfAssignment = cached?.nodeWorkflows?.[node.id];
+            if (wfAssignment) {
+                hasAnyAssignment = true;
+                const key = wfAssignment.name;
+                if (!workflowGroups.has(key)) {
+                    workflowGroups.set(key, {
+                        id: wfAssignment.id || `workflow_${workflowGroups.size}`,
+                        name: key,
+                        description: this.workflows[wfAssignment.id || '']?.description,
+                        nodeIds: []
+                    });
+                }
+                workflowGroups.get(key)!.nodeIds.push(node.id);
+            }
+        }
+
+        // Fallback: if no files have workflow assignments, use connectivity-based grouping
+        if (!hasAnyAssignment) {
+            return this.computeWorkflowsByConnectivity(nodes, edges);
+        }
+
+        // Phase 2: Iteratively assign orphan nodes via edges until no more changes
+        // This handles chains like A→B→C where only A is initially assigned
+        const assignedNodes = new Set(
+            [...workflowGroups.values()].flatMap(g => g.nodeIds)
+        );
+
+        let changed = true;
+        let iterations = 0;
+        const maxIterations = 20; // Prevent infinite loops
+
+        while (changed && iterations < maxIterations) {
+            changed = false;
+            iterations++;
+
+            for (const node of nodes) {
+                if (assignedNodes.has(node.id)) continue;
+
+                // Find any edge connecting this node to an assigned node
+                const connectedEdge = edges.find(
+                    e => (e.source === node.id && assignedNodes.has(e.target)) ||
+                         (e.target === node.id && assignedNodes.has(e.source))
+                );
+
+                if (connectedEdge) {
+                    const assignedId = connectedEdge.source === node.id
+                        ? connectedEdge.target : connectedEdge.source;
+                    for (const wf of workflowGroups.values()) {
+                        if (wf.nodeIds.includes(assignedId)) {
+                            wf.nodeIds.push(node.id);
+                            assignedNodes.add(node.id);
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 2.5: Reassign misplaced nodes
+        // If a node has NO edges within its assigned workflow but DOES have edges to another workflow,
+        // move it to where its edges connect. This fixes LLM misassignments.
+        const nodeToWf = new Map<string, string>();
+        for (const [name, wf] of workflowGroups) {
+            for (const nid of wf.nodeIds) nodeToWf.set(nid, name);
+        }
+
+        // Build edge adjacency
+        const nodeNeighbors = new Map<string, Set<string>>();
+        for (const edge of edges) {
+            if (!nodeNeighbors.has(edge.source)) nodeNeighbors.set(edge.source, new Set());
+            if (!nodeNeighbors.has(edge.target)) nodeNeighbors.set(edge.target, new Set());
+            nodeNeighbors.get(edge.source)!.add(edge.target);
+            nodeNeighbors.get(edge.target)!.add(edge.source);
+        }
+
+        // Find and reassign misplaced nodes
+        for (const node of nodes) {
+            const currentWf = nodeToWf.get(node.id);
+            if (!currentWf) continue;
+
+            const neighbors = nodeNeighbors.get(node.id);
+            if (!neighbors || neighbors.size === 0) continue;
+
+            // Count neighbors in current workflow vs other workflows
+            let internalCount = 0;
+            const externalCounts = new Map<string, number>();
+
+            for (const neighborId of neighbors) {
+                const neighborWf = nodeToWf.get(neighborId);
+                if (!neighborWf) continue;
+
+                if (neighborWf === currentWf) {
+                    internalCount++;
+                } else {
+                    externalCounts.set(neighborWf, (externalCounts.get(neighborWf) || 0) + 1);
+                }
+            }
+
+            // If NO internal connections but HAS external connections, reassign
+            if (internalCount === 0 && externalCounts.size > 0) {
+                // Find workflow with most connections
+                let bestWf = currentWf;
+                let bestCount = 0;
+                for (const [wfName, count] of externalCounts) {
+                    if (count > bestCount) {
+                        bestCount = count;
+                        bestWf = wfName;
+                    }
+                }
+
+                if (bestWf !== currentWf) {
+                    // Remove from current workflow
+                    const oldWf = workflowGroups.get(currentWf);
+                    if (oldWf) {
+                        oldWf.nodeIds = oldWf.nodeIds.filter(id => id !== node.id);
+                    }
+                    // Add to new workflow
+                    const newWf = workflowGroups.get(bestWf);
+                    if (newWf && !newWf.nodeIds.includes(node.id)) {
+                        newWf.nodeIds.push(node.id);
+                        nodeToWf.set(node.id, bestWf);
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Handle remaining orphans by creating new workflows for disconnected subgraphs
+        // HTTP edges (labeled with [METHOD /path]) are used by webview for layout merging
+        const isHttpEdge = (label?: string) => label && /^\s*\[?\s*(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s/.test(label);
+
+        // Find any remaining orphan nodes (not in any workflow) and create workflows for their connected components
+        const stillOrphaned = nodes.filter(n => !nodeToWf.has(n.id));
+        if (stillOrphaned.length > 0) {
+            // Build adjacency for orphans
+            const orphanAdj = new Map<string, Set<string>>();
+            for (const n of stillOrphaned) orphanAdj.set(n.id, new Set());
+            for (const edge of edges) {
+                const srcOrphan = orphanAdj.has(edge.source);
+                const tgtOrphan = orphanAdj.has(edge.target);
+                if (srcOrphan && tgtOrphan) {
+                    orphanAdj.get(edge.source)!.add(edge.target);
+                    orphanAdj.get(edge.target)!.add(edge.source);
+                }
+            }
+
+            // Find connected components among orphans
+            const visited = new Set<string>();
+            for (const orphan of stillOrphaned) {
+                if (visited.has(orphan.id)) continue;
+
+                // BFS to find connected component
+                const component: string[] = [];
+                const queue = [orphan.id];
+                while (queue.length > 0) {
+                    const curr = queue.shift()!;
+                    if (visited.has(curr)) continue;
+                    visited.add(curr);
+                    component.push(curr);
+                    for (const neighbor of orphanAdj.get(curr) || []) {
+                        if (!visited.has(neighbor)) queue.push(neighbor);
+                    }
+                }
+
+                // Create workflow for this orphan component
+                if (component.length > 0) {
+                    const primaryNode = nodes.find(n => n.id === component[0]);
+                    const fileName = primaryNode?.source?.file?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'orphan';
+                    const wfName = `${fileName.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`;
+                    const wfId = `orphan_${crypto.createHash('md5').update(component.join(',')).digest('hex').slice(0, 8)}`;
+
+                    workflowGroups.set(wfName, {
+                        id: wfId,
+                        name: wfName,
+                        nodeIds: component
+                    });
+                    for (const nid of component) nodeToWf.set(nid, wfName);
+                }
+            }
+        }
+
+        // Phase 4: Auto-create workflows for orphan HTTP endpoint nodes
+        // Nodes targeted by HTTP edges but not in any workflow need a home,
+        // otherwise the inter-workflow HTTP edges get filtered out.
+        const assignedAfterMerge = new Set(
+            [...workflowGroups.values()].flatMap(g => g.nodeIds)
+        );
+        const httpOrphansByFile = new Map<string, string[]>();
+        for (const edge of edges) {
+            if (!isHttpEdge(edge.label)) continue;
+            if (assignedAfterMerge.has(edge.target)) continue;
+            // Target is an orphan endpoint node
+            const targetNode = nodes.find(n => n.id === edge.target);
+            const file = targetNode?.source?.file || 'unknown';
+            if (!httpOrphansByFile.has(file)) httpOrphansByFile.set(file, []);
+            if (!httpOrphansByFile.get(file)!.includes(edge.target)) {
+                httpOrphansByFile.get(file)!.push(edge.target);
+            }
+        }
+        if (httpOrphansByFile.size > 0) {
+            for (const [file, orphanIds] of httpOrphansByFile) {
+                const shortName = file.split('/').pop()?.replace(/\.[^.]+$/, '') || file;
+                const wfName = `${shortName.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} API`;
+                workflowGroups.set(wfName, {
+                    id: `api_${crypto.createHash('md5').update(file).digest('hex').slice(0, 8)}`,
+                    name: wfName,
+                    nodeIds: orphanIds
+                });
+                for (const nid of orphanIds) nodeToWf.set(nid, wfName);
+            }
+        }
+
+        // Phase 5: Hub detection — identify shared service files
+        const nodeFile = new Map<string, string>();
+        for (const node of nodes) {
+            if (node.source?.file) nodeFile.set(node.id, node.source.file);
+        }
+
+        // Count how many distinct workflow groups target each file
+        const fileIncomingWorkflows = new Map<string, Set<string>>();
+        for (const edge of edges) {
+            const sourceFile = nodeFile.get(edge.source);
+            const targetFile = nodeFile.get(edge.target);
+            if (!sourceFile || !targetFile || sourceFile === targetFile) continue;
+
+            const sourceWf = [...workflowGroups.values()]
+                .find(wf => wf.nodeIds.includes(edge.source));
+            if (!sourceWf) continue;
+
+            if (!fileIncomingWorkflows.has(targetFile)) {
+                fileIncomingWorkflows.set(targetFile, new Set());
+            }
+            fileIncomingWorkflows.get(targetFile)!.add(sourceWf.name);
+        }
+
+        const hubFiles = new Set<string>();
+        for (const [file, wfNames] of fileIncomingWorkflows) {
+            if (wfNames.size >= CONFIG.WORKFLOW.HUB_FILE_THRESHOLD) {
+                hubFiles.add(file);
+            }
+        }
+
+        // Phase 6: BFS through hub files for end-to-end workflow paths
+        // Each workflow follows its outgoing edges through shared services
+        // IMPORTANT: A node can only belong to ONE workflow - don't add if already assigned
+        const hubNodeIds = new Set(
+            nodes.filter(n => hubFiles.has(n.source?.file || '')).map(n => n.id)
+        );
+        const edgesBySource = new Map<string, string[]>();
+        for (const edge of edges) {
+            if (!edgesBySource.has(edge.source)) edgesBySource.set(edge.source, []);
+            edgesBySource.get(edge.source)!.push(edge.target);
+        }
+
+        // Rebuild global node→workflow mapping before hub traversal
+        const globalNodeToWf = new Map<string, string>();
+        for (const [name, wf] of workflowGroups) {
+            for (const nid of wf.nodeIds) {
+                if (!globalNodeToWf.has(nid)) {
+                    globalNodeToWf.set(nid, name);
+                }
+            }
+        }
+
+        for (const wf of workflowGroups.values()) {
+            const queue = [...wf.nodeIds];
+            const visited = new Set(wf.nodeIds);
+
+            while (queue.length > 0) {
+                const curr = queue.shift()!;
+                for (const target of edgesBySource.get(curr) || []) {
+                    if (visited.has(target)) continue;
+                    // Only traverse into hub nodes that aren't already assigned to another workflow
+                    if (hubNodeIds.has(target) && !globalNodeToWf.has(target)) {
+                        wf.nodeIds.push(target);
+                        visited.add(target);
+                        globalNodeToWf.set(target, wf.name);
+                        queue.push(target);
+                    }
+                }
+            }
+        }
+
+        // Phase 7: Filter workflows.
+        // A workflow must either contain an LLM node, or be connected via cross-workflow
+        // edges to a workflow that does. UI-only files (droppable-cell.tsx, etc.) get removed.
+        const nodeByIdMap = new Map(nodes.map(n => [n.id, n]));
+        const edgeNodeIds = new Set(edges.flatMap(e => [e.source, e.target]));
+
+        const mapped = [...workflowGroups.values()]
+            .map(wf => {
+                // Fix numeric-only workflow names — derive from primary file instead
+                let name = wf.name;
+                if (/^\d+$/.test(name)) {
+                    const primaryNode = nodes.find(n => wf.nodeIds.includes(n.id) && n.source?.file);
+                    if (primaryNode?.source?.file) {
+                        const fileName = primaryNode.source.file.split('/').pop()?.replace(/\.[^.]+$/, '') || name;
+                        name = fileName.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                    }
+                }
+                return {
+                    id: wf.id,
+                    name,
+                    description: wf.description,
+                    nodeIds: wf.nodeIds
+                };
+            })
+            .filter(wf => {
+                // Drop tiny single-node workflows that participate in no edges
+                if (wf.nodeIds.length < CONFIG.WORKFLOW.MIN_NODES_RENDERED) {
+                    if (!wf.nodeIds.some(id => edgeNodeIds.has(id))) return false;
+                }
+                return true;
+            });
+
+        // Identify which workflows have LLM nodes
+        const hasLLM = new Map<string, boolean>();
+        for (const wf of mapped) {
+            hasLLM.set(wf.id, wf.nodeIds.some(id => nodeByIdMap.get(id)?.type === 'llm'));
+        }
+
+        // Check cross-workflow connectivity: a non-LLM workflow is kept only if
+        // it shares an edge with a workflow that has LLM nodes
+        const wfByNodeId = new Map<string, string>();
+        for (const wf of mapped) {
+            for (const nid of wf.nodeIds) wfByNodeId.set(nid, wf.id);
+        }
+
+        // Build cross-workflow adjacency
+        const wfNeighbors = new Map<string, Set<string>>();
+        for (const wf of mapped) wfNeighbors.set(wf.id, new Set());
+        for (const edge of edges) {
+            const srcWf = wfByNodeId.get(edge.source);
+            const tgtWf = wfByNodeId.get(edge.target);
+            if (srcWf && tgtWf && srcWf !== tgtWf) {
+                wfNeighbors.get(srcWf)?.add(tgtWf);
+                wfNeighbors.get(tgtWf)?.add(srcWf);
+            }
+        }
+
+        // BFS from LLM workflows to find all reachable workflows
+        const reachable = new Set<string>();
+        const queue: string[] = [];
+        for (const wf of mapped) {
+            if (hasLLM.get(wf.id)) {
+                reachable.add(wf.id);
+                queue.push(wf.id);
+            }
+        }
+        while (queue.length > 0) {
+            const curr = queue.shift()!;
+            for (const neighbor of wfNeighbors.get(curr) || []) {
+                if (!reachable.has(neighbor)) {
+                    reachable.add(neighbor);
+                    queue.push(neighbor);
+                }
+            }
+        }
+
+        const result = mapped.filter(wf => reachable.has(wf.id));
+
+        return result;
+    }
+
+    /**
+     * Fallback: compute workflows from graph connectivity (original algorithm).
+     * Used when no LLM workflow assignments are stored in cache.
+     */
+    private computeWorkflowsByConnectivity(nodes: WorkflowNode[], edges: WorkflowEdge[]): WorkflowMetadata[] {
+        // Build undirected adjacency list
         const adj = new Map<string, Set<string>>();
         for (const node of nodes) {
             adj.set(node.id, new Set());
@@ -681,7 +1300,7 @@ export class CacheManager {
             adj.get(edge.target)?.add(edge.source);
         }
 
-        // Find connected components
+        // Find connected components via BFS
         const visited = new Set<string>();
         const components: string[][] = [];
 
@@ -711,17 +1330,14 @@ export class CacheManager {
 
         // Create workflow metadata for each component
         return components.map((nodeIds, idx) => {
-            // Find workflow info by matching node IDs (more reliable than primaryFile)
             let name: string | undefined;
             let description: string | undefined;
             let matchedId: string | undefined;
 
-            // Build set for faster lookup
             const nodeIdSet = new Set(nodeIds);
 
             // Look for cached workflow that shares nodes with this component
             for (const [wfId, wf] of Object.entries(this.workflows)) {
-                // Check if this workflow's primary file matches any node in component
                 const componentNodes = nodes.filter(n => nodeIdSet.has(n.id));
                 const hasMatchingFile = componentNodes.some(n => n.source?.file === wf.primaryFile);
 
@@ -739,15 +1355,12 @@ export class CacheManager {
                 const fallbackNode = primaryNode || nodes.find(n => nodeIdSet.has(n.id));
 
                 const funcName = fallbackNode?.source?.function;
-                // Skip anonymous/lambda function names - use file name instead
                 if (funcName && !funcName.startsWith('anonymous') && funcName !== 'lambda') {
-                    // Convert function_name to Title Case
                     name = funcName
                         .replace(/_/g, ' ')
                         .replace(/([a-z])([A-Z])/g, '$1 $2')
                         .replace(/\b\w/g, c => c.toUpperCase());
                 } else if (fallbackNode?.source?.file) {
-                    // Use filename without extension
                     const fileName = fallbackNode.source.file.split('/').pop() || 'unknown';
                     name = fileName.replace(/\.[^.]+$/, '')
                         .replace(/[-_]/g, ' ')
@@ -764,13 +1377,8 @@ export class CacheManager {
                 nodeIds
             };
         }).filter(wf => {
-            // Filter out workflows without LLM nodes
             const workflowNodes = nodes.filter(n => wf.nodeIds.includes(n.id));
-            const hasLLMNode = workflowNodes.some(n => n.type === 'llm');
-            if (!hasLLMNode) {
-                console.log(`[CACHE] Filtering workflow "${wf.name}" - no LLM nodes`);
-            }
-            return hasLLMNode;
+            return workflowNodes.some(n => n.type === 'llm');
         });
     }
 

@@ -49,6 +49,7 @@ export function measureNodeDimensions(label: string, options?: NodeMeasureOption
         .style('font-family', fontFamily)
         .style('font-size', fontSize)
         .style('font-weight', fontWeight)
+        .style('letter-spacing', '-0.01em')
         .style('line-height', '1.2')
         .text(label);
 
@@ -70,7 +71,9 @@ export function measureNodeDimensions(label: string, options?: NodeMeasureOption
         .style('font-family', fontFamily)
         .style('font-size', fontSize)
         .style('font-weight', fontWeight)
+        .style('letter-spacing', '-0.01em')
         .style('line-height', '1.2')
+        .style('word-break', 'break-word')
         .style('word-wrap', 'break-word')
         .style('overflow-wrap', 'break-word')
         .style('hyphens', 'auto')
@@ -110,13 +113,6 @@ export function measureNodeDimensions(label: string, options?: NodeMeasureOption
         width: Math.max(minWidth, optimalWidth + horizontalPadding),
         height: finalHeight + verticalPadding
     };
-}
-
-/**
- * Measure node width based on label text (legacy - use measureNodeDimensions)
- */
-export function measureNodeWidth(label: string): number {
-    return measureNodeDimensions(label).width;
 }
 
 /**

@@ -35,11 +35,12 @@ export async function analyzeAndUpdateSingleFile(
     const { api, cache, webview, log } = ctx;
 
     // Pre-flight: check backend is reachable (skip silently for background file updates)
-    const healthy = await api.checkHealth();
-    if (!healthy) {
-        log('Backend not reachable — skipping incremental analysis');
+    const health = await api.checkHealth();
+    if (!health.healthy || health.apiKeyStatus !== 'valid') {
+        log('Backend not reachable or API key issue — skipping incremental analysis');
         return;
     }
+    
 
     try {
         const filePath = vscode.workspace.asRelativePath(uri, false);

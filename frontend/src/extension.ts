@@ -4,15 +4,10 @@ import { CacheManager } from './cache';
 import { WorkflowDetector } from './analyzer';
 import { WebviewManager } from './webview';
 import { metadataBuilder } from './metadata-builder';
-import { registerWorkflowParticipant } from './copilot/workflow-participant';
-import { registerWorkflowTool } from './copilot/workflow-tool';
-import { registerWorkflowQueryTool } from './copilot/workflow-query-tool';
-import { registerNodeQueryTool } from './copilot/node-query-tool';
-import { registerWorkflowNavigateTool } from './copilot/workflow-navigate-tool';
-import { registerListWorkflowsTool } from './copilot/list-workflows-tool';
 import { CONFIG } from './config';
 import { buildFileTree, saveFilePickerSelection, getSavedSelectedPaths } from './file-picker';
 import { getMetadataBatcher } from './metadata-batcher';
+import { ParserManager } from './tree-sitter/parser-manager';
 
 // File watching
 import { scheduleFileAnalysis } from './file-watching/handler';
@@ -39,6 +34,9 @@ import {
 
 const outputChannel = vscode.window.createOutputChannel('Codag');
 
+// Module-level cache reference for deactivate flush
+let cacheInstance: CacheManager | null = null;
+
 /**
  * Log message with timestamp
  */
@@ -54,6 +52,15 @@ function log(message: string): void {
 export async function activate(context: vscode.ExtensionContext) {
     log('Codag activating...');
 
+    // Initialize tree-sitter parser (must happen before any parsing)
+    const parserManager = ParserManager.create(context.extensionUri);
+    try {
+        await parserManager.init();
+        log('Tree-sitter parser initialized (JS, TS, TSX, Python)');
+    } catch (error) {
+        log(`Warning: Tree-sitter init failed: ${error}. Parsing will be unavailable.`);
+    }
+
     const config = vscode.workspace.getConfiguration('codag');
     const apiUrl = config.get<string>('apiUrl', 'http://localhost:52104');
 
@@ -61,65 +68,15 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const api = new APIClient(apiUrl, outputChannel);
     const cache = new CacheManager(context);
+    cacheInstance = cache;  // Store for deactivate flush
     const webview = new WebviewManager(context);
 
     // Initialize call graph persistence for instant local updates
     initCallGraphPersistence(context);
 
-    // Register Copilot integrations (dual approach for reliability)
-
-    // 1. Language Model Tool - Auto-invoked by Copilot (may be unreliable)
-    const toolDisposable = registerWorkflowTool(cache, () => webview.getViewState());
-    if (toolDisposable) {
-        context.subscriptions.push(toolDisposable);
-        log('Registered workflow-context tool (automatic)');
-    } else {
-        log('Warning: Language Model Tool API not available');
-    }
-
-    // 2. File Reader Tool - Allows LLM to read file contents on demand
-    const { registerFileReaderTool } = require('./copilot/file-reader-tool');
-    const fileReaderTool = registerFileReaderTool();
-    if (fileReaderTool) {
-        context.subscriptions.push(fileReaderTool);
-        log('Registered workflow-file-reader tool');
-    }
-
-    // 3. List Workflows Tool - Allows LLM to get overview of ALL workflows
-    const listWorkflowsTool = registerListWorkflowsTool(cache);
-    if (listWorkflowsTool) {
-        context.subscriptions.push(listWorkflowsTool);
-        log('Registered list-workflows tool');
-    }
-
-    // 4. Workflow Query Tool - Allows LLM to query complete workflows by name
-    const workflowQueryTool = registerWorkflowQueryTool(cache);
-    if (workflowQueryTool) {
-        context.subscriptions.push(workflowQueryTool);
-        log('Registered workflow-query tool');
-    }
-
-    // 5. Node Query Tool - Allows LLM to filter and search nodes
-    const nodeQueryTool = registerNodeQueryTool(cache);
-    if (nodeQueryTool) {
-        context.subscriptions.push(nodeQueryTool);
-        log('Registered node-query tool');
-    }
-
-    // 7. Workflow Navigate Tool - Allows LLM to find paths and analyze dependencies
-    const navigateTool = registerWorkflowNavigateTool(cache);
-    if (navigateTool) {
-        context.subscriptions.push(navigateTool);
-        log('Registered workflow-navigate tool');
-    }
-
-    // 6. Chat Participant - Explicit @codag mention (100% reliable)
-    context.subscriptions.push(registerWorkflowParticipant(context, cache, () => webview.getViewState()));
-    log('Registered @codag chat participant (explicit)');
-
     // File watching for auto-refresh on save
     const fileWatcher = vscode.workspace.createFileSystemWatcher(
-        '**/*.{py,ts,js,jsx,tsx,mjs,cjs}',
+        '**/*.{py,ts,js,jsx,tsx,mjs,cjs,go,rs,c,h,cpp,cc,cxx,hpp,swift,java,lua}',
         false, // ignoreCreateEvents
         false, // ignoreChangeEvents
         true   // ignoreDeleteEvents
@@ -186,10 +143,17 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    // Handle metadata ready (hydrate labels in UI)
+    // Handle metadata ready (hydrate labels in UI and persist to cache)
     metadataBatcher.onReady((filePath, metadata) => {
         log(`[Metadata Batch] Hydrating labels for ${filePath}: ${Object.keys(metadata.labels).length} labels`);
         webview.hydrateLabels(filePath, metadata.labels, metadata.descriptions);
+        // Persist to cache so labels survive restarts
+        cache.updateMetadata(filePath, {
+            labels: metadata.labels,
+            descriptions: metadata.descriptions,
+            edgeLabels: {},
+            timestamp: Date.now()
+        });
     });
 
     // File watching configuration
@@ -223,67 +187,15 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Register code modification command for Copilot integration
-    const { CodeModifier } = require('./copilot/code-modifier');
-    const codeModifier = new CodeModifier();
-
+    // Track text edits for incremental tree-sitter parsing.
+    // Applies edits to cached syntax trees so the next parse() reuses unchanged subtrees.
     context.subscriptions.push(
-        vscode.commands.registerCommand('codag.applyCodeModification', async (modification: {
-            type: 'insert' | 'modify',
-            file: string,
-            line: number,
-            code: string,
-            language: string
-        }) => {
-            try {
-                let success = false;
-
-                if (modification.type === 'insert') {
-                    // For insert, use the same file/line for before and after
-                    success = await codeModifier.insertNodeBetween(
-                        modification.file,
-                        modification.line,
-                        modification.file,
-                        modification.line + 10, // Estimate
-                        modification.code,
-                        `Code inserted via @codag at line ${modification.line}`
-                    );
-                } else {
-                    // For modify
-                    success = await codeModifier.modifyNode(
-                        modification.file,
-                        modification.line,
-                        'Node',
-                        modification.code,
-                        `Code modified via @codag at line ${modification.line}`
-                    );
-                }
-
-                if (success) {
-                    // After successful modification, invalidate cache and re-analyze
-                    await cache.invalidateFile(modification.file);
-                    const uri = vscode.Uri.file(modification.file);
-                    await doAnalyzeAndUpdateSingleFile(uri);
-                }
-            } catch (error: any) {
-                vscode.window.showErrorMessage(`Failed to apply modification: ${error.message}`);
+        vscode.workspace.onDidChangeTextDocument((event) => {
+            if (!ParserManager.isAvailable()) return;
+            const manager = ParserManager.get();
+            for (const change of event.contentChanges) {
+                manager.applyEdit(event.document.uri.fsPath, change);
             }
-        })
-    );
-
-    // Register command to focus on a specific node (for clickable links from Copilot)
-    context.subscriptions.push(
-        vscode.commands.registerCommand('codag.focusNode', (nodeId: string, nodeLabel?: string) => {
-            log(`Focusing on node: ${nodeId} (${nodeLabel || 'unknown'})`);
-            webview.focusNode(nodeId);
-        })
-    );
-
-    // Register command to focus on a specific workflow (for clickable links from Copilot)
-    context.subscriptions.push(
-        vscode.commands.registerCommand('codag.focusWorkflow', (workflowName: string) => {
-            log(`Focusing on workflow: ${workflowName}`);
-            webview.focusWorkflow(workflowName);
         })
     );
 
@@ -303,6 +215,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 log('Clearing cache...');
                 incrementAnalysisSession();  // Invalidate any pending analysis results
                 metadataBatcher.cancel();  // Cancel pending metadata requests
+                webview.clearGraph();  // Clear webview immediately so stale data isn't shown
                 await cache.clear();
                 log('Cache cleared successfully, reanalyzing workspace');
                 await analyzeWorkspace(workspaceCtx, true);
@@ -321,6 +234,7 @@ export async function activate(context: vscode.ExtensionContext) {
             log(`Clearing cache for ${paths.length} selected files...`);
             incrementAnalysisSession();  // Invalidate any pending analysis results
             metadataBatcher.cancel();  // Cancel pending metadata requests
+            webview.clearGraph();  // Clear webview immediately so stale data isn't shown
 
             // Invalidate cache for each selected file
             for (const filePath of paths) {
@@ -447,6 +361,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
                 webview.notifyAnalysisStarted();
                 webview.startBatchProgress(batches.length);
+                cache.startMultiBatchAnalysis(batches.length);
 
                 // Process batches with worker pool - each worker picks up next batch immediately
                 const batchTasks = batches.map((batch, batchIndex) => async () => {
@@ -481,6 +396,7 @@ export async function activate(context: vscode.ExtensionContext) {
                         const contentMap: Record<string, string> = {};
                         for (const f of batch) contentMap[f.path] = f.content;
                         await cache.setAnalysisResult(batchGraph, contentMap);
+                        cache.batchCompleted();
 
                         // Update progress only - graph updated once at end
                         webview.batchCompleted(batch.length);
@@ -489,6 +405,7 @@ export async function activate(context: vscode.ExtensionContext) {
                         return batchGraph;
                     } catch (batchError: any) {
                         log(`Batch ${batchIndex + 1} failed: ${batchError.message}`);
+                        cache.batchCompleted();  // Still decrement to prevent stuck state
                         return null;
                     }
                 });
@@ -506,4 +423,12 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 }
 
-export function deactivate() {}
+export async function deactivate() {
+    // Flush any pending cache writes before extension closes
+    if (cacheInstance) {
+        await cacheInstance.flush();
+    }
+    if (ParserManager.isAvailable()) {
+        ParserManager.get().dispose();
+    }
+}

@@ -17,6 +17,7 @@ import { detectWorkflowGroups, updateSnapshotStats } from './workflow-detection'
 import { setupDirectory } from './directory';
 import { notifications } from './notifications';
 import { initTutorial } from './tutorial';
+import { setupExportButton, addWorkflowExportButtons } from './export';
 
 declare const d3: any;
 declare function acquireVsCodeApi(): any;
@@ -63,8 +64,9 @@ declare function acquireVsCodeApi(): any;
     // Render collapsed components (within workflows)
     renderCollapsedComponents(updateComponentVisibility);
 
-    // Setup controls (zoom, format, refresh)
+    // Setup controls (zoom, format, refresh, export)
     setupControls();
+    setupExportButton();
     setupClosePanel();
     setupDirectory();
 
@@ -104,6 +106,9 @@ declare function acquireVsCodeApi(): any;
         updateGroupVisibility();
         // Update header stats
         updateSnapshotStats(state.workflowGroups, state.currentGraphData);
+
+        // Add export buttons to workflow groups
+        addWorkflowExportButtons();
 
         // Force edge paths update (component edges need this)
         updateEdgePaths();

@@ -1,6 +1,5 @@
 // Edge rendering and hover effects
 import * as state from './state';
-import { getVirtualNodeId, getNodeWorkflowCount, getOriginalNodeId } from './utils';
 import {
     EDGE_STROKE_WIDTH, EDGE_HOVER_STROKE_WIDTH, EDGE_HOVER_HIT_WIDTH,
     EDGE_COLOR_HOVER, ARROW_HEAD_LENGTH
@@ -83,18 +82,15 @@ function findElkEdgeRoute(
     targetId: string,
     workflowGroups: WorkflowGroup[]
 ): EdgeRoute | null {
-    // Get original node IDs (strip virtual ID suffix if present)
-    const origSource = getOriginalNodeId(sourceId);
-    const origTarget = getOriginalNodeId(targetId);
-
     // Find which workflow this edge belongs to
     for (const group of workflowGroups) {
-        if (group.nodes.includes(origSource) && group.nodes.includes(origTarget)) {
-            const edgeId = `${group.id}_${origSource}->${origTarget}`;
+        if (group.nodes.includes(sourceId) && group.nodes.includes(targetId)) {
+            const edgeId = `${group.id}_${sourceId}->${targetId}`;
             const route = state.getElkEdgeRoute(edgeId);
             if (route && isValidRoute(route)) return route;
         }
     }
+
     return null;
 }
 
@@ -140,11 +136,6 @@ function getComponentPlaceholderId(componentId: string): string {
 }
 
 
-// Get expanded nodes from state (created by layoutWorkflows)
-export function getExpandedNodes(): any[] {
-    return state.expandedNodes;
-}
-
 export function renderEdges(): void {
     const { g, currentGraphData, workflowGroups } = state;
     const expandedComponents = state.getExpandedComponents();
@@ -166,12 +157,9 @@ export function renderEdges(): void {
         return allWorkflowNodeIds.has(e.source) && allWorkflowNodeIds.has(e.target);
     });
 
-    // Transform edges to use virtual IDs for shared nodes and component placeholders
+    // Transform edges for component placeholders
     const allEdges: any[] = [];
     baseEdges.forEach((edge: any) => {
-        const sourceIsShared = getNodeWorkflowCount(edge.source, workflowGroups) > 1;
-        const targetIsShared = getNodeWorkflowCount(edge.target, workflowGroups) > 1;
-
         // Check if source/target are in collapsed components
         const sourceComp = findNodeCollapsedComponent(edge.source, workflowGroups, expandedComponents);
         const targetComp = findNodeCollapsedComponent(edge.target, workflowGroups, expandedComponents);
@@ -181,54 +169,15 @@ export function renderEdges(): void {
             return;
         }
 
-        if (!sourceIsShared && !targetIsShared) {
-            // Neither endpoint is shared - render the edge
-            // (Previously skipped cross-workflow edges, but these are valid for service-to-service connections)
-
-            // Transform for components if needed
-            allEdges.push({
-                ...edge,
-                source: sourceComp ? getComponentPlaceholderId(sourceComp.id) : edge.source,
-                target: targetComp ? getComponentPlaceholderId(targetComp.id) : edge.target,
-                _originalSource: edge.source,
-                _originalTarget: edge.target,
-                _sourceIsComponent: !!sourceComp,
-                _targetIsComponent: !!targetComp
-            });
-        } else {
-            // Find which workflow(s) this edge belongs to (both endpoints in same workflow)
-            workflowGroups.forEach((wf: any) => {
-                const sourceInWf = wf.nodes.includes(edge.source);
-                const targetInWf = wf.nodes.includes(edge.target);
-                if (sourceInWf && targetInWf) {
-                    // Determine source ID (component placeholder > virtual ID > regular ID)
-                    let sourceId = edge.source;
-                    if (sourceComp) {
-                        sourceId = getComponentPlaceholderId(sourceComp.id);
-                    } else if (sourceIsShared) {
-                        sourceId = getVirtualNodeId(edge.source, wf.id);
-                    }
-
-                    // Determine target ID
-                    let targetId = edge.target;
-                    if (targetComp) {
-                        targetId = getComponentPlaceholderId(targetComp.id);
-                    } else if (targetIsShared) {
-                        targetId = getVirtualNodeId(edge.target, wf.id);
-                    }
-
-                    allEdges.push({
-                        ...edge,
-                        source: sourceId,
-                        target: targetId,
-                        _originalSource: edge.source,
-                        _originalTarget: edge.target,
-                        _sourceIsComponent: !!sourceComp,
-                        _targetIsComponent: !!targetComp
-                    });
-                }
-            });
-        }
+        allEdges.push({
+            ...edge,
+            source: sourceComp ? getComponentPlaceholderId(sourceComp.id) : edge.source,
+            target: targetComp ? getComponentPlaceholderId(targetComp.id) : edge.target,
+            _originalSource: edge.source,
+            _originalTarget: edge.target,
+            _sourceIsComponent: !!sourceComp,
+            _targetIsComponent: !!targetComp
+        });
     });
 
     // Track which bidirectional pairs we've already processed
@@ -256,21 +205,18 @@ export function renderEdges(): void {
         }
     });
 
-    // Filter out edges without valid ELK routes (these would render as invisible/broken)
+    // Filter out edges without valid ELK routes
     const routeFilteredEdges = edgesToRender.filter((edge: any) => {
         const elkRoute = findElkEdgeRoute(
             edge._originalSource || edge.source,
             edge._originalTarget || edge.target,
             workflowGroups
         );
-        if (!elkRoute) {
-            return false;
-        }
-        return true;
+        return !!elkRoute;
     });
 
     // Filter out edges whose endpoints aren't actually rendered
-    // (catches HTTP/cross-file edges pointing to nodes in < 3 node groups or missing nodes)
+    // (catches edges pointing to nodes in < 3 node groups or missing nodes)
     const renderedNodeIds = new Set(state.expandedNodes.map((n: any) => n.id));
     // Include component placeholder IDs for collapsed components
     workflowGroups.forEach((wf: any) => {
@@ -347,7 +293,7 @@ export function renderEdges(): void {
             }
         });
 
-    // Generate edge path using ELK routes only (no fallback)
+    // Generate edge path using ELK routes
     const getEdgePath = (d: any) => {
         const elkRoute = findElkEdgeRoute(d._originalSource || d.source, d._originalTarget || d.target, workflowGroups);
         if (elkRoute) {
@@ -367,29 +313,22 @@ export function renderEdges(): void {
 }
 
 /**
- * Calculate label position from ELK edge route
- * For orthogonal paths, place label at midpoint of the horizontal segment
+ * Calculate label position at edge midpoint
  */
 function getLabelPositionFromRoute(route: EdgeRoute): { x: number; y: number } {
     const { startPoint, endPoint, bendPoints } = route;
-
-    // Build full path points
     const points = [startPoint, ...bendPoints, endPoint];
 
-    // Find horizontal segment (where y values are equal between consecutive points)
+    // Find horizontal segment - place label there if exists
     for (let i = 0; i < points.length - 1; i++) {
         const p1 = points[i];
         const p2 = points[i + 1];
         if (Math.abs(p1.y - p2.y) < 1) {
-            // Horizontal segment - place label at midpoint
-            return {
-                x: (p1.x + p2.x) / 2,
-                y: p1.y
-            };
+            return { x: (p1.x + p2.x) / 2, y: p1.y };
         }
     }
 
-    // Fallback: midpoint of entire edge
+    // Fallback: midpoint
     return {
         x: (startPoint.x + endPoint.x) / 2,
         y: (startPoint.y + endPoint.y) / 2
@@ -397,15 +336,34 @@ function getLabelPositionFromRoute(route: EdgeRoute): { x: number; y: number } {
 }
 
 /**
+ * Merge labels for edges with the same source→target pair.
+ * E.g., two edges "Event Type → callback" with labels "connected" and "stop"
+ * become one entry with label "connected / stop".
+ */
+function deduplicateEdgeLabels(edges: any[]): any[] {
+    const byKey = new Map<string, any>();
+    for (const e of edges) {
+        const key = `${e._originalSource || e.source}->${e._originalTarget || e.target}`;
+        const existing = byKey.get(key);
+        if (existing) {
+            existing.label = `${existing.label} / ${e.label}`;
+        } else {
+            byKey.set(key, { ...e });
+        }
+    }
+    return Array.from(byKey.values());
+}
+
+/**
  * Render text labels on edges that have them (only actual labels, not payloads)
- * Uses ELK route geometry for positioning - no fallback
+ * Labels are positioned on the edge path using route geometry
  */
 function renderEdgeLabels(edges: any[]): void {
     const { g, workflowGroups } = state;
 
     // Filter to only edges with actual labels (not payload data)
     // Labels are descriptive actions like "valid", "invalid", "POST /analyze"
-    const edgesWithLabels = edges.filter(e => e.label && typeof e.label === 'string');
+    const edgesWithLabels = deduplicateEdgeLabels(edges.filter(e => e.label && typeof e.label === 'string'));
     if (edgesWithLabels.length === 0) {
         state.setEdgeLabelsState(null, null, []);
         return;
@@ -421,7 +379,6 @@ function renderEdgeLabels(edges: any[]): void {
         .append('g')
         .attr('class', 'edge-label')
         .attr('transform', (d: any) => {
-            // Position label ON the edge path (from route geometry)
             const elkRoute = findElkEdgeRoute(
                 d._originalSource || d.source,
                 d._originalTarget || d.target,
@@ -565,7 +522,6 @@ export function updateEdgeLabels(transitionDuration: number = 0): void {
     if (!edgeLabelGroups || edgesWithLabels.length === 0) return;
 
     const computeTransform = (d: any) => {
-        // Position label ON the edge path
         const elkRoute = findElkEdgeRoute(
             d._originalSource || d.source,
             d._originalTarget || d.target,
@@ -619,57 +575,23 @@ export function updateEdgesIncremental(): void {
     const allEdges: any[] = [];
 
     currentGraphData.edges.forEach((edge: any) => {
-        const sourceIsShared = getNodeWorkflowCount(edge.source, workflowGroups) > 1;
-        const targetIsShared = getNodeWorkflowCount(edge.target, workflowGroups) > 1;
         const sourceComp = findNodeCollapsedComponent(edge.source, workflowGroups, expandedComponents);
         const targetComp = findNodeCollapsedComponent(edge.target, workflowGroups, expandedComponents);
 
-        if (!sourceIsShared && !targetIsShared) {
-            const sameWorkflow = workflowGroups.some((wf: any) =>
-                wf.nodes.includes(edge.source) && wf.nodes.includes(edge.target)
-            );
-            if (!sameWorkflow) return;
-
-            allEdges.push({
-                ...edge,
-                source: sourceComp ? getComponentPlaceholderId(sourceComp.id) : edge.source,
-                target: targetComp ? getComponentPlaceholderId(targetComp.id) : edge.target,
-                _originalSource: edge.source,
-                _originalTarget: edge.target,
-                _sourceIsComponent: !!sourceComp,
-                _targetIsComponent: !!targetComp
-            });
-        } else {
-            workflowGroups.forEach((wf: any) => {
-                const sourceInWf = wf.nodes.includes(edge.source);
-                const targetInWf = wf.nodes.includes(edge.target);
-                if (sourceInWf && targetInWf) {
-                    let sourceId = edge.source;
-                    if (sourceComp) {
-                        sourceId = getComponentPlaceholderId(sourceComp.id);
-                    } else if (sourceIsShared) {
-                        sourceId = getVirtualNodeId(edge.source, wf.id);
-                    }
-
-                    let targetId = edge.target;
-                    if (targetComp) {
-                        targetId = getComponentPlaceholderId(targetComp.id);
-                    } else if (targetIsShared) {
-                        targetId = getVirtualNodeId(edge.target, wf.id);
-                    }
-
-                    allEdges.push({
-                        ...edge,
-                        source: sourceId,
-                        target: targetId,
-                        _originalSource: edge.source,
-                        _originalTarget: edge.target,
-                        _sourceIsComponent: !!sourceComp,
-                        _targetIsComponent: !!targetComp
-                    });
-                }
-            });
+        // Skip internal edges within same collapsed component
+        if (sourceComp && targetComp && sourceComp.id === targetComp.id) {
+            return;
         }
+
+        allEdges.push({
+            ...edge,
+            source: sourceComp ? getComponentPlaceholderId(sourceComp.id) : edge.source,
+            target: targetComp ? getComponentPlaceholderId(targetComp.id) : edge.target,
+            _originalSource: edge.source,
+            _originalTarget: edge.target,
+            _sourceIsComponent: !!sourceComp,
+            _targetIsComponent: !!targetComp
+        });
     });
 
     // Handle bidirectional edges
@@ -799,9 +721,6 @@ export function updateEdgesIncremental(): void {
 }
 
 /**
- * Incrementally update edge labels
- */
-/**
  * Highlight or unhighlight an edge by source/target IDs
  * Used by panel.ts for hover effects on edge list items
  */
@@ -834,7 +753,7 @@ export function highlightEdge(sourceId: string, targetId: string, highlight: boo
 function updateEdgeLabelsIncremental(edges: any[]): void {
     const { g, workflowGroups } = state;
 
-    const edgesWithLabels = edges.filter(e => e.label && typeof e.label === 'string');
+    const edgesWithLabels = deduplicateEdgeLabels(edges.filter(e => e.label && typeof e.label === 'string'));
 
     // Get or create labels container
     let edgeLabelsContainer = g.select('.edge-labels-container');
@@ -874,7 +793,6 @@ function updateEdgeLabelsIncremental(edges: any[]): void {
     const allLabels = labelSelection.merge(enterLabels);
 
     allLabels.attr('transform', (d: any) => {
-        // Position label ON the edge path
         const elkRoute = findElkEdgeRoute(
             d._originalSource || d.source,
             d._originalTarget || d.target,

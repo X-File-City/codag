@@ -1,6 +1,7 @@
 // Side panel for node details
 import * as state from './state';
 import { highlightEdge } from './edges';
+import { escapeNodeIdForCSS } from './utils';
 
 declare const d3: any;
 
@@ -25,51 +26,23 @@ export function openPanel(nodeData: any): void {
 
     title.textContent = nodeData.label;
 
-    // Check if node is a shared copy (has _originalId from node duplication)
-    const isSharedCopy = nodeData._originalId != null;
-    const originalId = isSharedCopy ? nodeData._originalId : nodeData.id;
-
     // Set workflow name(s)
     const workflowEl = document.getElementById('panelWorkflow');
     if (workflowEl) {
-        if (isSharedCopy && nodeData._workflowId) {
-            // For shared copy, show which workflow this copy belongs to, plus others
-            const thisWorkflow = workflowGroups?.find((g: any) => g.id === nodeData._workflowId);
-            const otherWorkflows = workflowGroups?.filter(
-                (g: any) => g.nodes.includes(originalId) && g.id !== nodeData._workflowId
-            ) || [];
-
-            let workflowHtml = thisWorkflow ? `<strong>${thisWorkflow.name}</strong> (this copy)` : '';
-            if (otherWorkflows.length > 0) {
-                workflowHtml += '<br>' + otherWorkflows.map((w: any) => w.name).join('<br>');
-            }
-            workflowEl.innerHTML = workflowHtml;
+        const workflows = workflowGroups?.filter(
+            (g: any) => g.nodes.includes(nodeData.id)
+        ) || [];
+        if (workflows.length > 0) {
+            workflowEl.innerHTML = workflows.map((w: any) => w.name).join('<br>');
             workflowEl.style.display = 'block';
         } else {
-            // For non-shared nodes, show the workflow
-            const workflows = workflowGroups?.filter(
-                (g: any) => g.nodes.includes(nodeData.id)
-            ) || [];
-            if (workflows.length > 0) {
-                workflowEl.innerHTML = workflows.map((w: any) => w.name).join('<br>');
-                workflowEl.style.display = 'block';
-            } else {
-                workflowEl.style.display = 'none';
-            }
+            workflowEl.style.display = 'none';
         }
     }
 
-    // Add type badge with optional SHARED tag
+    // Add type badge
     type.textContent = nodeData.type;
     type.className = `type-badge ${nodeData.type}`;
-
-    // Clean up any existing shared tag first
-    const existingTag = type.parentElement?.querySelector('.shared-tag');
-    if (existingTag) existingTag.remove();
-
-    if (isSharedCopy) {
-        type.insertAdjacentHTML('afterend', '<span class="shared-tag" style="display: inline-block; margin-left: 8px; padding: 4px 8px; border-radius: 12px; font-size: 10px; font-weight: 600; background: rgba(255,255,255,0.1); color: var(--vscode-descriptionForeground); text-transform: uppercase; letter-spacing: 0.5px;">Shared</span>');
-    }
 
     if (nodeData.description) {
         description.textContent = nodeData.description;
@@ -95,15 +68,29 @@ export function openPanel(nodeData: any): void {
         sourceSection.style.display = 'none';
     }
 
-    // Find incoming edges (use original ID for lookup since edges use original IDs)
-    const nodeWorkflowId = nodeData._workflowId;
-    const incomingEdges = currentGraphData.edges.filter((e: any) => {
-        if (e.target !== originalId) return false;
-        // For shared nodes, only show edges within this workflow
-        if (nodeWorkflowId) {
-            const workflow = workflowGroups?.find((g: any) => g.id === nodeWorkflowId);
-            if (workflow && !workflow.nodes.includes(e.source)) return false;
+    // Reference node: show "Navigate to original" link
+    const refSection = document.getElementById('referenceSection');
+    if (refSection) {
+        if (nodeData._refTargetId && nodeData._refWorkflowName) {
+            refSection.innerHTML = `<div style="margin-top: 8px; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; cursor: pointer; transition: background 0.15s;" class="ref-navigate-link">
+                <span style="color: var(--vscode-textLink-foreground); font-size: 12px; font-weight: 500;">↗ Go to original in <strong>${nodeData._refWorkflowName}</strong></span>
+            </div>`;
+            refSection.style.display = 'block';
+
+            const refLink = refSection.querySelector('.ref-navigate-link') as HTMLElement;
+            if (refLink) {
+                refLink.addEventListener('mouseenter', () => { refLink.style.background = 'var(--vscode-list-hoverBackground)'; });
+                refLink.addEventListener('mouseleave', () => { refLink.style.background = 'var(--vscode-input-background)'; });
+                refLink.addEventListener('click', () => { navigateToNode(nodeData._refTargetId); });
+            }
+        } else {
+            refSection.style.display = 'none';
         }
+    }
+
+    // Find incoming edges
+    const incomingEdges = currentGraphData.edges.filter((e: any) => {
+        if (e.target !== nodeData.id) return false;
         return currentGraphData.nodes.some((n: any) => n.id === e.source);
     });
 
@@ -125,7 +112,7 @@ export function openPanel(nodeData: any): void {
             if (isDecision && edges.length > 0) {
                 // Decision node: show node with branches listed below
                 const branchesHtml = edges.map((edge: any) =>
-                    `<div class="edge-item-branch" data-source-id="${sourceId}" data-target-id="${originalId}" style="display: flex; align-items: center; gap: 6px; padding: 4px 0 4px 24px; cursor: pointer;">
+                    `<div class="edge-item-branch" data-source-id="${sourceId}" data-target-id="${nodeData.id}" style="display: flex; align-items: center; gap: 6px; padding: 4px 0 4px 24px; cursor: pointer;">
                         <span style="color: var(--vscode-descriptionForeground);">→</span>
                         <span style="font-size: 10px; padding: 2px 6px; background: #7c3aed; color: white; border-radius: 3px;">${edge.label || 'branch'}</span>
                     </div>`
@@ -141,7 +128,7 @@ export function openPanel(nodeData: any): void {
             } else {
                 // Regular node: single entry per edge
                 return edges.map((edge: any) =>
-                    `<div class="edge-item" data-source-id="${sourceId}" data-target-id="${originalId}" data-node-id="${sourceId}" style="margin: 8px 0; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; cursor: pointer; transition: background 0.15s;">
+                    `<div class="edge-item" data-source-id="${sourceId}" data-target-id="${nodeData.id}" data-node-id="${sourceId}" style="margin: 8px 0; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; cursor: pointer; transition: background 0.15s;">
                         <div style="display: flex; align-items: center; gap: 8px;">
                             <span class="type-badge ${sourceType}" style="font-size: 9px; padding: 2px 6px;">${sourceType}</span>
                             <span style="font-size: 12px; font-weight: 500;">${sourceLabel}</span>
@@ -156,14 +143,9 @@ export function openPanel(nodeData: any): void {
         incomingSection.style.display = 'none';
     }
 
-    // Find outgoing edges (use original ID for lookup since edges use original IDs)
+    // Find outgoing edges
     const outgoingEdges = currentGraphData.edges.filter((e: any) => {
-        if (e.source !== originalId) return false;
-        // For shared nodes, only show edges within this workflow
-        if (nodeWorkflowId) {
-            const workflow = workflowGroups?.find((g: any) => g.id === nodeWorkflowId);
-            if (workflow && !workflow.nodes.includes(e.target)) return false;
-        }
+        if (e.source !== nodeData.id) return false;
         return currentGraphData.nodes.some((n: any) => n.id === e.target);
     });
 
@@ -179,7 +161,7 @@ export function openPanel(nodeData: any): void {
                     const targetNode = currentGraphData.nodes.find((n: any) => n.id === edge.target);
                     const targetLabel = targetNode ? targetNode.label : edge.target;
                     const targetType = targetNode?.type || 'step';
-                    return `<div class="edge-item" data-source-id="${originalId}" data-target-id="${edge.target}" data-node-id="${edge.target}" style="display: flex; align-items: center; gap: 6px; padding: 4px 0; cursor: pointer;">
+                    return `<div class="edge-item" data-source-id="${nodeData.id}" data-target-id="${edge.target}" data-node-id="${edge.target}" style="display: flex; align-items: center; gap: 6px; padding: 4px 0; cursor: pointer;">
                         <span style="font-size: 10px; padding: 2px 6px; background: #7c3aed; color: white; border-radius: 3px;">${edge.label || 'branch'}</span>
                         <span style="color: var(--vscode-descriptionForeground);">→</span>
                         <span class="type-badge ${targetType}" style="font-size: 9px; padding: 2px 6px;">${targetType}</span>
@@ -193,7 +175,7 @@ export function openPanel(nodeData: any): void {
                 const targetNode = currentGraphData.nodes.find((n: any) => n.id === edge.target);
                 const targetLabel = targetNode ? targetNode.label : edge.target;
                 const targetType = targetNode?.type || 'step';
-                return `<div class="edge-item" data-source-id="${originalId}" data-target-id="${edge.target}" data-node-id="${edge.target}" style="margin: 8px 0; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; cursor: pointer; transition: background 0.15s;">
+                return `<div class="edge-item" data-source-id="${nodeData.id}" data-target-id="${edge.target}" data-node-id="${edge.target}" style="margin: 8px 0; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; cursor: pointer; transition: background 0.15s;">
                     <div style="display: flex; align-items: center; gap: 8px;">
                         <span class="type-badge ${targetType}" style="font-size: 9px; padding: 2px 6px;">${targetType}</span>
                         <span style="font-size: 12px; font-weight: 500;">${targetLabel}</span>
@@ -225,7 +207,7 @@ export function openPanel(nodeData: any): void {
 
     // Show selection indicator
     d3.selectAll('.node-selection-indicator').style('display', 'none');
-    d3.select(`.node-selection-indicator[data-node-id="${nodeData.id}"]`).style('display', 'block');
+    d3.select(`.node-selection-indicator[data-node-id="${escapeNodeIdForCSS(nodeData.id)}"]`).style('display', 'block');
 }
 
 /**
@@ -305,10 +287,7 @@ function navigateToNode(nodeId: string): void {
     if (!node) return;
 
     // Find the node's position from expanded nodes (which have layout positions)
-    const expandedNode = expandedNodes.find((n: any) => {
-        const origId = n._originalId || n.id;
-        return origId === nodeId;
-    });
+    const expandedNode = expandedNodes.find((n: any) => n.id === nodeId);
 
     if (expandedNode && expandedNode.x !== undefined && expandedNode.y !== undefined) {
         // Get SVG dimensions
@@ -327,7 +306,7 @@ function navigateToNode(nodeId: string): void {
             .call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
     }
 
-    // Open the panel for this node (use the node data with potential virtual copy info)
+    // Open the panel for this node
     const nodeToOpen = expandedNode || node;
     openPanel(nodeToOpen);
 }

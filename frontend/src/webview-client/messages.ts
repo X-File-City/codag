@@ -8,12 +8,13 @@ import { renderGroups, updateGroupsIncremental } from './groups';
 import { renderEdges, updateEdgesIncremental } from './edges';
 import { renderNodes, updateNodesIncremental, fadeInNodes, applyFileChangeState, hydrateLabels, markNodesPending, clearNodesPending } from './nodes';
 import { dragstarted, dragged, dragended } from './drag';
-import { renderMinimap, pulseMinimapNodes } from './minimap';
+import { renderMinimap, pulseMinimapNodes, pulseFileNodes } from './minimap';
 import { fitToScreen, formatGraph } from './controls';
 import { updateGroupVisibility } from './visibility';
 import { populateDirectory, focusOnWorkflow } from './directory';
 import { getFilePicker } from './file-picker';
 import { notifications } from './notifications';
+import { addWorkflowExportButtons } from './export';
 
 declare const d3: any;
 
@@ -30,6 +31,19 @@ const pendingNodes = new Set<string>();
 // Track active file change states (survives re-renders)
 // filePath -> 'active' | 'changed'
 const activeFileChanges = new Map<string, 'active' | 'changed'>();
+
+function showErrorOverlay(overlayId: string, retryBtnId: string): void {
+    const overlay = document.getElementById(overlayId);
+    if (!overlay) return;
+    overlay.style.display = 'flex';
+    const retryBtn = document.getElementById(retryBtnId);
+    if (retryBtn) {
+        retryBtn.onclick = () => {
+            overlay.style.display = 'none';
+            state.vscode.postMessage({ command: 'retryAnalysis' });
+        };
+    }
+}
 
 export function setupMessageHandler(): void {
     const { svg, zoom } = state;
@@ -126,17 +140,27 @@ export function setupMessageHandler(): void {
 
             case 'backendError': {
                 notifications.dismissType('loading');
-                const errorOverlay = document.getElementById('backendError');
-                if (errorOverlay) {
-                    errorOverlay.style.display = 'flex';
-                    const retryBtn = document.getElementById('btn-retry-backend');
-                    if (retryBtn) {
-                        retryBtn.onclick = () => {
-                            errorOverlay.style.display = 'none';
-                            state.vscode.postMessage({ command: 'retryAnalysis' });
-                        };
+                showErrorOverlay('backendError', 'btn-retry-backend');
+                break;
+            }
+
+            case 'apiKeyError': {
+                notifications.dismissType('loading');
+                notifications.dismissType('progress');
+                // Update title/description based on reason
+                const overlay = document.getElementById('apiKeyError');
+                if (overlay) {
+                    const title = overlay.querySelector('.error-overlay-title');
+                    const desc = overlay.querySelector('.error-overlay-desc');
+                    if (message.reason === 'missing') {
+                        if (title) title.textContent = 'Gemini API key not found';
+                        if (desc) desc.innerHTML = 'Codag needs a Gemini API key to analyze your code. Create a <code>backend/.env</code> file with your key.';
+                    } else {
+                        if (title) title.textContent = 'Invalid Gemini API key';
+                        if (desc) desc.innerHTML = 'The Gemini API rejected the request. Your API key may be invalid or expired.';
                     }
                 }
+                showErrorOverlay('apiKeyError', 'btn-retry-apikey');
                 break;
             }
 
@@ -153,10 +177,46 @@ export function setupMessageHandler(): void {
                             activeFileChanges.delete(change.filePath);
                         } else {
                             activeFileChanges.set(change.filePath, change.state);
+
+                            // Pulse minimap to draw attention when file becomes active
+                            if (change.state === 'active') {
+                                pulseFileNodes(change.filePath);
+                            }
                         }
                         applyFileChangeState(change.filePath, change.functions, change.state);
                     });
                 }
+                break;
+
+            case 'showNotification':
+                // Show a toast notification from the extension
+                notifications.show({
+                    type: message.type || 'info',
+                    message: message.message,
+                    dismissMs: message.dismissMs
+                });
+                break;
+
+            case 'exportSuccess':
+                // PNG export completed successfully
+                notifications.show({
+                    type: 'success',
+                    message: `Exported to ${message.path.split('/').pop()}`,
+                    dismissMs: 4000
+                });
+                break;
+
+            case 'exportCancelled':
+                // User cancelled the export
+                break;
+
+            case 'exportError':
+                // Export failed
+                notifications.show({
+                    type: 'error',
+                    message: `Export failed: ${message.error}`,
+                    dismissMs: 5000
+                });
                 break;
 
             case 'hydrateLabels':
@@ -230,24 +290,28 @@ export function setupMessageHandler(): void {
 
                         if (!graphToApply) return;
 
-                        // Compute diff for toast message
+                        // Compute diff for layout decisions
                         const diff = computeGraphDiff(state.currentGraphData, graphToApply);
 
                         if (!hasDiff(diff)) {
                             return;
                         }
 
-                        // Show loading notification with update summary
-                        const addedCount = diff.nodes.added.length;
-                        const removedCount = diff.nodes.removed.length;
-                        const parts = [];
-                        if (addedCount > 0) parts.push(`+${addedCount}`);
-                        if (removedCount > 0) parts.push(`-${removedCount}`);
-
-                        if (parts.length > 0) {
+                        // Show brief update notification
+                        if (fileChangeToApply) {
+                            const fileName = fileChangeToApply.filePath.split('/').pop() || 'file';
+                            const fnCount = fileChangeToApply.functions.length;
+                            const fnText = fnCount === 1 ? fileChangeToApply.functions[0] : `${fnCount} functions`;
                             notifications.show({
-                                type: 'loading',
-                                message: `Updating: ${parts.join(', ')} nodes`
+                                type: 'info',
+                                message: `Updated ${fnText} in ${fileName}`,
+                                dismissMs: 1500
+                            });
+                        } else if (diff.nodes.added.length > 0) {
+                            notifications.show({
+                                type: 'info',
+                                message: `Added ${diff.nodes.added.length} node${diff.nodes.added.length > 1 ? 's' : ''}`,
+                                dismissMs: 1500
                             });
                         }
 
@@ -281,10 +345,11 @@ export function setupMessageHandler(): void {
                         const isAdditiveOnly = diff.nodes.removed.length === 0 && diff.edges.removed.length === 0;
                         const structureChanged = diff.nodes.added.length > 0 || diff.nodes.removed.length > 0 ||
                                                diff.edges.added.length > 0 || diff.edges.removed.length > 0;
+                        let deferExportButtons = false;  // Track if we're deferring button add to transition end
 
                         if (structureChanged && !isAdditiveOnly) {
                             // Structure changed with removals - crossfade to new render
-                            const oldContainers = state.g.selectAll('.groups, .collapsed-groups, .nodes-container, .edge-paths-container, .edge-labels-container, .shared-arrows-container');
+                            const oldContainers = state.g.selectAll('.groups, .collapsed-groups, .nodes-container, .edge-paths-container, .edge-labels-container');
 
                             // Render new elements (they'll be appended after old ones)
                             renderGroups();
@@ -303,7 +368,14 @@ export function setupMessageHandler(): void {
                             });
 
                             // Crossfade: fade out old, fade in new
-                            oldContainers.transition().duration(150).style('opacity', 0).remove();
+                            // Use .on('end') to add export buttons AFTER old elements are removed
+                            deferExportButtons = true;
+                            oldContainers.transition().duration(150).style('opacity', 0).remove()
+                                .on('end', function() {
+                                    // Only add buttons once (when first container finishes)
+                                    if (!d3.select('.workflow-export-btn').empty()) return;
+                                    addWorkflowExportButtons();
+                                });
                             [newGroups, newNodes, newEdgePaths, newEdgeLabels].forEach(sel => {
                                 if (!sel.empty()) sel.transition().duration(150).style('opacity', 1);
                             });
@@ -338,6 +410,10 @@ export function setupMessageHandler(): void {
                         renderMinimap();
                         updateGroupVisibility();
                         updateSnapshotStats(state.workflowGroups, state.currentGraphData);
+                        // Only add buttons immediately if not deferred to transition end
+                        if (!deferExportButtons) {
+                            addWorkflowExportButtons();
+                        }
 
                         // Fade in newly added nodes
                         if (diff.nodes.added.length > 0) {
@@ -428,6 +504,14 @@ export function setupMessageHandler(): void {
                 getFilePicker().close(false);
                 break;
 
+            case 'clearGraph':
+                // Clear all graph elements completely (used when cache is cleared)
+                state.g.selectAll('.groups, .collapsed-groups, .nodes-container, .edge-paths-container, .edge-labels-container').remove();
+                state.setGraphData({ nodes: [], edges: [], llms_detected: [], workflows: [] });
+                state.setWorkflowGroups([]);
+                updateSnapshotStats([], { nodes: [], edges: [], llms_detected: [], workflows: [] });
+                break;
+
             case 'initGraph':
                 // Close file picker if open (no animation - show graph immediately)
                 getFilePicker().close(false);
@@ -465,6 +549,9 @@ export function setupMessageHandler(): void {
 
                     // Update header stats
                     updateSnapshotStats(state.workflowGroups, state.currentGraphData);
+
+                    // Add export buttons to workflow groups
+                    addWorkflowExportButtons();
 
                     // Show success notification
                     notifications.show({

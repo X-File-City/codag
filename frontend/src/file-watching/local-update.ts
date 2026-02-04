@@ -39,7 +39,7 @@ export async function performLocalUpdate(
         // Read file content
         const content = fs.readFileSync(filePath, 'utf-8');
 
-        // Extract call graph (uses acorn for JS/TS, regex for Python)
+        // Extract call graph (uses tree-sitter for all languages)
         const newCallGraph = extractCallGraph(content, filePath);
 
         // Get cached call graph for comparison
@@ -177,7 +177,7 @@ function resolveImportToRepoFile(
             else resolved.push(part);
         }
         const basePath = resolved.join('/');
-        for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.py', '']) {
+        for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.c', '.h', '.cpp', '.hpp', '.swift', '.java', '.lua', '']) {
             const fullPath = basePath + ext;
             if (allPaths.includes(fullPath)) return fullPath;
         }
@@ -185,7 +185,7 @@ function resolveImportToRepoFile(
 
     if (!importSource.includes('/') && !importSource.startsWith('@')) {
         const modulePath = importSource.replace(/\./g, '/');
-        for (const ext of ['.py', '.ts', '.js', '']) {
+        for (const ext of ['.py', '.ts', '.js', '.go', '.rs', '.c', '.cpp', '.swift', '.java', '.lua', '']) {
             const fullPath = modulePath + ext;
             const match = allPaths.find(f => f === fullPath || f.endsWith('/' + fullPath));
             if (match) return match;

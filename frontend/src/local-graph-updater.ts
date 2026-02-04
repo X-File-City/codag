@@ -61,14 +61,34 @@ function functionNameToLabel(name: string): string {
 }
 
 /**
+ * Validate and sanitize a function name for use in node IDs.
+ * Filters out malformed names that might come from minified/bundled code.
+ */
+function sanitizeFunctionName(functionName: string): string | null {
+    // Skip obviously invalid function names (minified code artifacts)
+    // Valid function names: alphanumeric, underscores, $ (JS), can't start with digit
+    if (!functionName || functionName.length > 100) return null;
+    if (/[;\/\[\]\{\}\(\)\s]/.test(functionName)) return null;  // Contains invalid chars
+    if (/^\d/.test(functionName)) return null;  // Starts with digit
+    if (functionName.length <= 2 && /^[a-z]+$/.test(functionName)) return null;  // Very short minified names
+    return functionName;
+}
+
+/**
  * Generate a stable node ID from file path and function name
  * Format: {relativePath}::{function} to match backend format
  * Example: backend/client.py::analyze_workflow
  */
 function generateNodeId(relativePath: string, functionName: string): string {
+    // Validate function name (filter out minified code artifacts)
+    const sanitized = sanitizeFunctionName(functionName);
+    if (!sanitized) {
+        console.warn(`Skipping invalid function name: "${functionName}" in ${relativePath}`);
+        return '';
+    }
     // Use :: separator (colons forbidden in filenames, so unambiguous)
     // relativePath should be relative (e.g., "backend/client.py")
-    return `${relativePath}::${functionName}`;
+    return `${relativePath}::${sanitized}`;
 }
 
 /**
@@ -148,7 +168,10 @@ export function applyLocalUpdate(
         }
     }
 
-    // 2. Handle added functions - create new nodes
+    // 2. Handle added functions - create new nodes FIRST (before edges)
+    // IMPORTANT: We must add ALL nodes before creating edges, otherwise
+    // edges between new functions may be lost if the target is processed after the source.
+    const newNodeIds: string[] = [];
     for (const funcName of diff.addedFunctions) {
         const funcInfo = newCallGraph.functions.get(funcName);
         if (!funcInfo) continue;
@@ -160,6 +183,8 @@ export function applyLocalUpdate(
         }
 
         const nodeId = generateNodeId(relativePath, funcName);
+        if (!nodeId) continue;  // Skip invalid function names
+
         const nodeType = determineNodeType(funcName, funcInfo, hasLLMCalls);
 
         const newNode: WorkflowNode = {
@@ -179,8 +204,14 @@ export function applyLocalUpdate(
 
         nodeById.set(nodeId, newNode);
         nodeByFunction.set(`${relativePath}:${funcName}`, newNode);
+        newNodeIds.push(nodeId);
+    }
 
-        // Also add edges from this new function to existing nodes
+    // 2b. Now create edges for the new functions (all nodes exist now)
+    for (const funcName of diff.addedFunctions) {
+        const nodeId = generateNodeId(relativePath, funcName);
+        if (!nodeId || !nodeById.has(nodeId)) continue;
+
         const calls = newCallGraph.callGraph.get(funcName) || [];
         for (const callee of calls) {
             // Look for target in current file or any existing node
@@ -193,11 +224,17 @@ export function applyLocalUpdate(
             }
 
             if (targetNode && nodeId !== targetNode.id) {
-                graph.edges.push({
-                    source: nodeId,
-                    target: targetNode.id
-                });
-                result.edgesAdded++;
+                // Check if edge already exists
+                const edgeExists = graph.edges.some(
+                    e => e.source === nodeId && e.target === targetNode!.id
+                );
+                if (!edgeExists) {
+                    graph.edges.push({
+                        source: nodeId,
+                        target: targetNode.id
+                    });
+                    result.edgesAdded++;
+                }
             }
         }
     }
@@ -293,6 +330,8 @@ export function createGraphFromCallGraph(
         }
 
         const nodeId = generateNodeId(relativePath, funcName);
+        if (!nodeId) continue;  // Skip invalid function names
+
         const nodeType = determineNodeType(funcName, funcInfo, hasLLMCalls);
 
         const node: WorkflowNode = {

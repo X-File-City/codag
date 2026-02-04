@@ -64,12 +64,17 @@ export async function analyzeSelectedFiles(
     const startTime = Date.now();
     const sessionAtStart = getAnalysisSession();  // Capture session to detect invalidation
 
-    // Pre-flight: check backend is reachable
-    const healthy = await api.checkHealth();
-    if (!healthy) {
+    // Pre-flight: check backend is reachable and API key is valid
+    const health = await api.checkHealth();
+    if (!health.healthy) {
         log('Backend not reachable — showing error overlay');
         webview.showLoading('Connecting to backend...');
         webview.notifyBackendError();
+        return;
+    }
+    if (health.apiKeyStatus !== 'valid') {
+        log(`API key ${health.apiKeyStatus} — showing error overlay`);
+        webview.notifyApiKeyError(health.apiKeyStatus === 'missing' ? 'missing' : 'invalid');
         return;
     }
 

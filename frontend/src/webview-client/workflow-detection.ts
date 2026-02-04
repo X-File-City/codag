@@ -149,8 +149,7 @@ export function detectWorkflowGroups(data: WorkflowGraph): WorkflowGroup[] {
             });
         });
 
-        // Merge workflows that are connected by edges (including HTTP edges)
-        // This ensures service-to-service connections keep workflows unified
+        // Build node→workflow lookup for orphan adoption
         const nodeToWorkflow = new Map<string, string>();
         workflowsByBase.forEach((wf, wfId) => {
             wf.nodeIds.forEach(nodeId => nodeToWorkflow.set(nodeId, wfId));
@@ -175,33 +174,60 @@ export function detectWorkflowGroups(data: WorkflowGraph): WorkflowGroup[] {
             }
         }
 
-        // Check each edge - if it connects nodes in different workflows, merge them
+        // Helper to detect HTTP edge labels (e.g., "GET /api", "POST /analyze")
+        const isHttpEdge = (label?: string) => label && /^\s*\[?\s*(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s/i.test(label);
+
+        // PASS 1: Adopt orphan nodes iteratively until no more changes
+        // This must happen BEFORE HTTP merge check, otherwise stub nodes won't have a workflow
+        // We iterate because edge A→B might not adopt if neither has a workflow,
+        // but edge B→C might give B a workflow, then we need to re-check A→B
+        let totalAdopted = 0;
+        let iteration = 0;
+        let adoptedThisRound: number;
+        do {
+            adoptedThisRound = 0;
+            iteration++;
+            data.edges.forEach(edge => {
+                const sourceWf = nodeToWorkflow.get(edge.source);
+                const targetWf = nodeToWorkflow.get(edge.target);
+
+                // Orphan adoption: add unassigned nodes to nearby workflow
+                if (sourceWf && !targetWf) {
+                    // Target node not in any workflow - add it to source's workflow
+                    const rootWf = findRoot(sourceWf);
+                    const wf = workflowsByBase.get(rootWf);
+                    if (wf && !wf.nodeIds.includes(edge.target)) {
+                        wf.nodeIds.push(edge.target);
+                        nodeToWorkflow.set(edge.target, rootWf);
+                        adoptedThisRound++;
+                    }
+                }
+                if (targetWf && !sourceWf) {
+                    // Source node not in any workflow - add it to target's workflow
+                    const rootWf = findRoot(targetWf);
+                    const wf = workflowsByBase.get(rootWf);
+                    if (wf && !wf.nodeIds.includes(edge.source)) {
+                        wf.nodeIds.push(edge.source);
+                        nodeToWorkflow.set(edge.source, rootWf);
+                        adoptedThisRound++;
+                    }
+                }
+            });
+            totalAdopted += adoptedThisRound;
+        } while (adoptedThisRound > 0 && iteration < 10); // Cap iterations to prevent infinite loops
+
+        // PASS 2: Merge workflows connected by HTTP edges (now that orphans are adopted)
+        let mergeCount = 0;
         data.edges.forEach(edge => {
+            if (!isHttpEdge(edge.label)) return;
+
             const sourceWf = nodeToWorkflow.get(edge.source);
             const targetWf = nodeToWorkflow.get(edge.target);
 
+            // HTTP edges should merge their workflows so ELK can route them properly
             if (sourceWf && targetWf && sourceWf !== targetWf) {
                 unionWorkflows(sourceWf, targetWf);
-            }
-
-            // Also add orphan nodes (not in any workflow) to connected workflow
-            if (sourceWf && !targetWf) {
-                // Target node not in any workflow - add it to source's workflow
-                const rootWf = findRoot(sourceWf);
-                const wf = workflowsByBase.get(rootWf);
-                if (wf && !wf.nodeIds.includes(edge.target)) {
-                    wf.nodeIds.push(edge.target);
-                    nodeToWorkflow.set(edge.target, rootWf);
-                }
-            }
-            if (targetWf && !sourceWf) {
-                // Source node not in any workflow - add it to target's workflow
-                const rootWf = findRoot(targetWf);
-                const wf = workflowsByBase.get(rootWf);
-                if (wf && !wf.nodeIds.includes(edge.source)) {
-                    wf.nodeIds.push(edge.source);
-                    nodeToWorkflow.set(edge.source, rootWf);
-                }
+                mergeCount++;
             }
         });
 
@@ -228,6 +254,10 @@ export function detectWorkflowGroups(data: WorkflowGraph): WorkflowGroup[] {
                 });
             }
         });
+
+        // Track title nodes and edges created during this call
+        const createdTitleNodes: WorkflowNode[] = [];
+        const createdTitleEdges: WorkflowEdge[] = [];
 
         // Process each merged workflow (keep disconnected components together)
         mergedWorkflows.forEach((workflow, baseId) => {
@@ -274,9 +304,9 @@ export function detectWorkflowGroups(data: WorkflowGraph): WorkflowGroup[] {
             // Create edges from title to entry nodes
             const titleEdges = createTitleEdges(titleNodeId, entryNodeIds);
 
-            // Inject title node and edges into graph data
-            data.nodes.push(titleNode);
-            data.edges.push(...titleEdges);
+            // Track title node and edges (will be added to finalNodes/finalEdges later)
+            createdTitleNodes.push(titleNode);
+            createdTitleEdges.push(...titleEdges);
 
             // Update adjacency lists for the new title node
             incomingEdges.set(titleNodeId, []);
@@ -321,8 +351,166 @@ export function detectWorkflowGroups(data: WorkflowGraph): WorkflowGroup[] {
             });
         });
 
+        // ===== Replace cross-workflow edges with reference nodes =====
+        // IMPORTANT: Do NOT mutate the input data - work on copies to avoid
+        // corrupting state on repeated calls
+
+        // Build final node→workflow lookup (exclude any existing reference/title nodes from previous calls)
+        const nodeToWorkflowFinal = new Map<string, string>();
+        groups.forEach(g => {
+            // Filter out any synthetic node IDs that might have leaked in
+            const realNodes = g.nodes.filter(nid =>
+                !nid.startsWith('__ref_') && !nid.startsWith('__title_')
+            );
+            realNodes.forEach(nid => nodeToWorkflowFinal.set(nid, g.id));
+        });
+
+        // Only process original nodes (not reference nodes or title nodes from previous calls)
+        // Title nodes have type 'workflow-title', reference nodes have type 'reference'
+        const originalNodes = data.nodes.filter(n =>
+            n.type !== 'reference' && n.type !== 'workflow-title'
+        );
+        const nodeById = new Map(originalNodes.map(n => [n.id, n]));
+
+        // Only process original edges (targets should be real node IDs, not __ref_ or __title_ IDs)
+        // Also filter out edges from title nodes (they'll be recreated fresh)
+        const originalEdges = data.edges.filter(e =>
+            !e.target.startsWith('__ref_') &&
+            !e.target.startsWith('__title_') &&
+            !e.source.startsWith('__title_')
+        );
+
+        const keptEdges: WorkflowEdge[] = [];
+        const referenceNodes = new Map<string, WorkflowNode>();
+
+        // Track which external nodes need reference nodes in which workflows
+        // Key: "targetNodeId_in_workflowId", Value: refId
+        const refNodeNeeded = new Map<string, string>();
+
+        // First pass: identify all cross-workflow edges and mark ref nodes needed
+        for (const edge of originalEdges) {
+            const sourceWf = nodeToWorkflowFinal.get(edge.source);
+            const targetWf = nodeToWorkflowFinal.get(edge.target);
+
+            if (sourceWf && targetWf && sourceWf !== targetWf) {
+                const key = `${edge.target}_in_${sourceWf}`;
+                if (!refNodeNeeded.has(key)) {
+                    refNodeNeeded.set(key, `__ref_${key}`);
+                }
+            }
+        }
+
+        // Create reference nodes
+        for (const [key, refId] of refNodeNeeded) {
+            const [targetId, , sourceWf] = key.split('_in_');
+            const targetNode = nodeById.get(targetId);
+            if (!targetNode) continue;
+
+            const targetWf = nodeToWorkflowFinal.get(targetId);
+            const targetGroup = groups.find(g => g.id === targetWf);
+            const validSource = targetNode.source?.file?.includes('.') ? targetNode.source : undefined;
+
+            referenceNodes.set(refId, {
+                id: refId,
+                label: targetNode.label,
+                type: 'reference' as any,
+                source: validSource,
+                _refTargetId: targetId,
+                _refWorkflowId: targetWf,
+                _refWorkflowName: targetGroup?.name || targetWf,
+            } as any);
+        }
+
+        // Second pass: rewrite edges, replacing external node references with ref nodes
+        for (const edge of originalEdges) {
+            const sourceWf = nodeToWorkflowFinal.get(edge.source);
+            const targetWf = nodeToWorkflowFinal.get(edge.target);
+
+            // Check if source is an external node that has a ref in target's workflow
+            const sourceRefKey = `${edge.source}_in_${targetWf}`;
+            const sourceRefId = refNodeNeeded.get(sourceRefKey);
+
+            // Check if target is an external node that has a ref in source's workflow
+            const targetRefKey = `${edge.target}_in_${sourceWf}`;
+            const targetRefId = refNodeNeeded.get(targetRefKey);
+
+            if (sourceWf && targetWf && sourceWf !== targetWf) {
+                // Cross-workflow edge: rewrite to use reference node
+                keptEdges.push({
+                    source: edge.source,
+                    target: targetRefId || edge.target,
+                    label: edge.label,
+                });
+            } else if (sourceWf && sourceWf === targetWf) {
+                // Internal edge - keep as is
+                keptEdges.push(edge);
+            } else if (sourceRefId && targetWf) {
+                // Source is external but has ref in target's workflow - rewrite source
+                keptEdges.push({
+                    source: sourceRefId,
+                    target: edge.target,
+                    label: edge.label,
+                });
+            } else {
+                // Keep edge as-is
+                keptEdges.push(edge);
+            }
+        }
+
+        // Build final node and edge lists WITHOUT mutating input data
+        // Include: original nodes + reference nodes + title nodes created this call
+        const finalNodes = [...originalNodes, ...Array.from(referenceNodes.values()), ...createdTitleNodes];
+        const finalEdges = [...keptEdges, ...createdTitleEdges];
+
+        // Update groups to include reference nodes (create new arrays, don't mutate)
+        groups.forEach(g => {
+            const refNodesForGroup = Array.from(referenceNodes.entries())
+                .filter(([refId, _]) => refId.endsWith(`_in_${g.id}`))
+                .map(([refId, _]) => refId);
+            // Filter out old synthetic nodes, keep real nodes + this call's title node + new ref nodes
+            const titleNodeForGroup = `__title_${g.id}`;
+            g.nodes = [
+                ...g.nodes.filter(nid => !nid.startsWith('__ref_') && !nid.startsWith('__title_')),
+                titleNodeForGroup,  // Add this workflow's title node
+                ...refNodesForGroup
+            ];
+        });
+
+        // Update adjacency lists for reference nodes and title nodes
+        for (const [refId] of referenceNodes) {
+            incomingEdges.set(refId, []);
+            outgoingEdges.set(refId, []);
+        }
+        for (const node of createdTitleNodes) {
+            incomingEdges.set(node.id, []);
+            outgoingEdges.set(node.id, []);
+        }
+        for (const edge of finalEdges) {
+            if (edge.source.startsWith('__ref_') || edge.source.startsWith('__title_')) {
+                outgoingEdges.get(edge.source)?.push(edge);
+            }
+            if (edge.target.startsWith('__ref_') || edge.target.startsWith('__title_')) {
+                incomingEdges.get(edge.target)?.push(edge);
+            }
+        }
+
+        // Replace data arrays with our processed versions
+        // Use splice to replace in-place rather than reassigning (maintains reference)
+        data.nodes.length = 0;
+        data.nodes.push(...finalNodes);
+        data.edges.length = 0;
+        data.edges.push(...finalEdges);
+
         groups.sort((a, b) => a.name.localeCompare(b.name));
-        return groups;
+
+        // Filter to only workflows with at least one LLM node
+        // Workflows without LLM nodes should not be displayed
+        const llmWorkflows = groups.filter(group => {
+            const groupNodes = data.nodes.filter(n => group.nodes.includes(n.id));
+            return groupNodes.some(n => n.type === 'llm');
+        });
+
+        return llmWorkflows;
     }
 
     // Fallback: Use client-side BFS grouping

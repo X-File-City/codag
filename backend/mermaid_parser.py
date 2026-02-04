@@ -9,6 +9,34 @@ from models import (
 )
 
 
+def find_connected_components(node_ids: List[str], edges: List[GraphEdge]) -> List[List[str]]:
+    """Find connected components in a subgraph (undirected)."""
+    node_set = set(node_ids)
+    adj: Dict[str, set] = {nid: set() for nid in node_ids}
+    for edge in edges:
+        if edge.source in node_set and edge.target in node_set:
+            adj[edge.source].add(edge.target)
+            adj[edge.target].add(edge.source)
+
+    visited = set()
+    components = []
+    for start in node_ids:
+        if start in visited:
+            continue
+        comp = []
+        queue = [start]
+        visited.add(start)
+        while queue:
+            curr = queue.pop(0)
+            comp.append(curr)
+            for neighbor in adj.get(curr, set()):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        components.append(comp)
+    return components
+
+
 def strip_markdown(text: str) -> str:
     """Remove markdown code block wrappers from text.
 
@@ -137,15 +165,33 @@ def parse_mermaid_response(response: str) -> WorkflowGraph:
         # Add edges
         all_edges.extend(workflow_edges)
 
-        # Create workflow metadata
+        # Split disconnected subgraphs into separate workflows
+        # LLMs often group unrelated entry points (e.g. multiple HTTP endpoints) into one workflow
         node_ids = [n.id for n in workflow_nodes]
         if node_ids:
-            workflow_id = f"workflow_{sanitize_id(workflow_name)}"
-            workflow_metadata.append(WorkflowMetadata(
-                id=workflow_id,
-                name=workflow_name,
-                nodeIds=node_ids
-            ))
+            components = find_connected_components(node_ids, workflow_edges)
+            if len(components) == 1:
+                workflow_id = f"workflow_{sanitize_id(workflow_name)}"
+                workflow_metadata.append(WorkflowMetadata(
+                    id=workflow_id,
+                    name=workflow_name,
+                    nodeIds=node_ids
+                ))
+            else:
+                for comp_ids in components:
+                    # Name by entry node (no incoming edges within component)
+                    comp_set = set(comp_ids)
+                    comp_edges = [e for e in workflow_edges if e.source in comp_set and e.target in comp_set]
+                    targets = {e.target for e in comp_edges}
+                    entry_ids = [nid for nid in comp_ids if nid not in targets]
+                    entry_node = all_nodes.get(entry_ids[0]) if entry_ids else all_nodes.get(comp_ids[0])
+                    comp_name = entry_node.label if entry_node and entry_node.label else workflow_name
+                    comp_id = f"workflow_{sanitize_id(comp_name)}"
+                    workflow_metadata.append(WorkflowMetadata(
+                        id=comp_id,
+                        name=comp_name,
+                        nodeIds=comp_ids
+                    ))
 
     # Extract LLMs detected
     llms = [n.model for n in all_nodes.values() if n.model]
@@ -287,7 +333,6 @@ def parse_flowchart(lines: List[str], metadata: Dict[str, Any]) -> Tuple[List[Gr
     # Include edges where source is defined
     # Target may not be defined if it's a cross-batch reference (will be resolved later)
     valid_edges: List[GraphEdge] = []
-    cross_batch_targets: List[str] = []
     for source, target, label in raw_edges:
         if source in nodes:
             valid_edges.append(GraphEdge(
@@ -295,10 +340,6 @@ def parse_flowchart(lines: List[str], metadata: Dict[str, Any]) -> Tuple[List[Gr
                 target=target,
                 label=label
             ))
-            if target not in nodes:
-                cross_batch_targets.append(target)
-        else:
-            pass  # Skip edges whose source is not defined
 
     return list(nodes.values()), valid_edges
 

@@ -64,12 +64,17 @@ export async function analyzeWorkspace(
 ): Promise<void> {
     const { api, cache, webview, metadataBuilder, extensionContext, log } = ctx;
 
-    // Pre-flight: check backend is reachable
-    const healthy = await api.checkHealth();
-    if (!healthy) {
+    // Pre-flight: check backend is reachable and API key is valid
+    const health = await api.checkHealth();
+    if (!health.healthy) {
         log('Backend not reachable — showing error overlay');
         webview.showLoading('Connecting to backend...');
         webview.notifyBackendError();
+        return;
+    }
+    if (health.apiKeyStatus !== 'valid') {
+        log(`API key ${health.apiKeyStatus} — showing error overlay`);
+        webview.notifyApiKeyError(health.apiKeyStatus === 'missing' ? 'missing' : 'invalid');
         return;
     }
 
@@ -142,146 +147,8 @@ export async function analyzeWorkspace(
             }
         }
 
-        // Extract HTTP connections from ALL source files (not just LLM files)
-        // This enables cross-service workflow detection (e.g., frontend api.ts → backend main.py)
-        log(`\nScanning all source files for HTTP connections...`);
-        const httpScanSourceFiles = await WorkflowDetector.getAllSourceFiles();
-        const httpSourceContents: { path: string; content: string }[] = [];
-
-        // Only read files that aren't already in allFileContents (avoid duplicate reads)
+        // Check cache FIRST — if this is a subsequent run, skip blocking HTTP scan
         const workflowPaths = new Set(allFileContents.map(f => f.path));
-        for (const uri of httpScanSourceFiles) {
-            const relativePath = vscode.workspace.asRelativePath(uri, false);
-            if (!workflowPaths.has(relativePath)) {
-                try {
-                    const content = await vscode.workspace.fs.readFile(uri);
-                    httpSourceContents.push({
-                        path: relativePath,
-                        content: Buffer.from(content).toString('utf8')
-                    });
-                } catch (error) {
-                    // Skip files that can't be read
-                }
-            }
-        }
-
-        // Combine workflow files + additional source files for HTTP extraction
-        const allFilesForHttpExtraction = [...allFileContents, ...httpSourceContents];
-        log(`Scanning ${allFilesForHttpExtraction.length} files (${allFileContents.length} LLM + ${httpSourceContents.length} other)`);
-
-        const rawHttpStructure = extractRepoStructure(allFilesForHttpExtraction);
-        const allHttpConnections = rawHttpStructure.httpConnections;
-        setHttpConnections(allHttpConnections);
-        setCrossFileCalls(rawHttpStructure.crossFileCalls || []);
-        // Store repo files for HTTP caller detection
-        setRepoFiles(rawHttpStructure.files.map(f => ({
-            path: f.path,
-            functions: f.functions.map(fn => ({ name: fn.name, calls: fn.calls, line: fn.line }))
-        })));
-        pipelineStats.analyzed.httpConnections = allHttpConnections.length;
-        pipelineStats.detected.httpFiles = httpSourceContents.length;
-        // Format HTTP connections for inclusion in LLM prompt
-        const httpConnectionsContext = formatHttpConnectionsForPrompt(rawHttpStructure);
-        if (allHttpConnections.length > 0) {
-            log(`Found ${allHttpConnections.length} HTTP connection(s) between services:`);
-            for (const conn of allHttpConnections) {
-                log(`  ${vscode.workspace.asRelativePath(conn.client.file)}::${conn.client.function} → ${vscode.workspace.asRelativePath(conn.handler.file)}::${conn.handler.function}`);
-                log(`    (${conn.client.method} ${conn.client.normalizedPath})`);
-            }
-        } else {
-            log(`No HTTP connections detected`);
-        }
-
-        // Use call graph tracing to find HTTP handlers connected to LLM calls
-        // This is more general than pattern matching - it traces imports and function calls
-        const allHttpHandlers = new Set<string>();
-        for (const conn of allHttpConnections) {
-            if (!workflowPaths.has(conn.handler.file)) {
-                allHttpHandlers.add(conn.handler.file);
-            }
-        }
-
-        // Trace call graph from all HTTP handlers to find which ones lead to LLM calls
-        const llmConnectedHandlers = traceCallGraphToLLM(rawHttpStructure, allHttpHandlers);
-
-        const httpClientFilesToAdd = new Set<string>();
-        const httpHandlerFilesToAdd = new Set<string>();
-        for (const conn of allHttpConnections) {
-            // Check if this handler is connected to LLM calls via call graph
-            const handlerConnectedToLLM = llmConnectedHandlers.has(conn.handler.file) ||
-                // Also check if handler file itself has LLM calls
-                rawHttpStructure.files.find(f => f.path === conn.handler.file)?.functions.some(f => f.hasLLMCall);
-
-            if (handlerConnectedToLLM) {
-                if (!workflowPaths.has(conn.client.file)) {
-                    httpClientFilesToAdd.add(conn.client.file);
-                }
-                if (!workflowPaths.has(conn.handler.file)) {
-                    httpHandlerFilesToAdd.add(conn.handler.file);
-                }
-            }
-        }
-
-        // Add HTTP client files (frontend files that call LLM-connected handlers)
-        if (httpClientFilesToAdd.size > 0) {
-            pipelineStats.detected.httpClientFilesAdded = httpClientFilesToAdd.size;
-            log(`\nAdding ${httpClientFilesToAdd.size} HTTP client file(s) to analysis:`);
-            for (const clientFile of httpClientFilesToAdd) {
-                log(`  + ${vscode.workspace.asRelativePath(clientFile)}`);
-                const found = httpSourceContents.find(f => f.path === clientFile);
-                if (found) {
-                    allFileContents.push(found);
-                    workflowPaths.add(clientFile);
-                }
-            }
-        }
-
-        // Add HTTP handler files and their LLM-connected dependencies
-        if (httpHandlerFilesToAdd.size > 0) {
-            log(`\nAdding ${httpHandlerFilesToAdd.size} HTTP handler file(s) to analysis:`);
-            for (const handlerFile of httpHandlerFilesToAdd) {
-                log(`  + ${vscode.workspace.asRelativePath(handlerFile)}`);
-                const found = httpSourceContents.find(f => f.path === handlerFile);
-                if (found) {
-                    allFileContents.push(found);
-                    workflowPaths.add(handlerFile);
-                }
-            }
-
-            // Use call graph tracing to find all files connected to LLM calls
-            // This follows imports and function calls from HTTP handlers to find the full workflow chain
-            const llmConnectedFiles = traceCallGraphToLLM(rawHttpStructure, httpHandlerFilesToAdd);
-
-            const llmFilesToAdd: string[] = [];
-            for (const llmFile of llmConnectedFiles) {
-                if (!workflowPaths.has(llmFile)) {
-                    llmFilesToAdd.push(llmFile);
-                }
-            }
-
-            if (llmFilesToAdd.length > 0) {
-                log(`\nAdding ${llmFilesToAdd.length} LLM file(s) via call graph tracing:`);
-                for (const llmFile of llmFilesToAdd) {
-                    log(`  + ${vscode.workspace.asRelativePath(llmFile)}`);
-                    const found = httpSourceContents.find(f => f.path === llmFile);
-                    if (found) {
-                        allFileContents.push(found);
-                        workflowPaths.add(llmFile);
-                    }
-                }
-            }
-        }
-
-        // Prune stale cache entries for files that no longer exist
-        // IMPORTANT: Do this AFTER HTTP client/handler files are added to allFileContents
-        // Otherwise, HTTP files (like api.ts) get pruned and then immediately need re-analysis
-        const existingFilePaths = allFileContents.map(f => f.path);
-        const pruned = await cache.pruneStaleEntries(existingFilePaths);
-        if (pruned > 0) {
-            log(`Pruned ${pruned} stale cache entries`);
-        }
-
-        // Check cache for ALL files before showing file picker
         let hasCachedData = false;
         if (!bypassCache) {
             log(`\nChecking cache for ${allFileContents.length} files...`);
@@ -302,6 +169,143 @@ export async function analyzeWorkspace(
 
         // Check if this is a subsequent run (has cached data)
         const isFirstRun = !hasCachedData;
+
+        // HTTP scan helper — extracts connections, discovers handler/client files
+        let httpConnectionsContext = '';
+        const runHttpScan = async () => {
+            log(`\nScanning all source files for HTTP connections...`);
+            const httpScanSourceFiles = await WorkflowDetector.getAllSourceFiles();
+            const httpSourceContents: { path: string; content: string }[] = [];
+
+            for (const uri of httpScanSourceFiles) {
+                const relativePath = vscode.workspace.asRelativePath(uri, false);
+                if (!workflowPaths.has(relativePath)) {
+                    try {
+                        const content = await vscode.workspace.fs.readFile(uri);
+                        httpSourceContents.push({
+                            path: relativePath,
+                            content: Buffer.from(content).toString('utf8')
+                        });
+                    } catch (error) {
+                        // Skip files that can't be read
+                    }
+                }
+            }
+
+            const allFilesForHttpExtraction = [...allFileContents, ...httpSourceContents];
+            log(`Scanning ${allFilesForHttpExtraction.length} files (${allFileContents.length} LLM + ${httpSourceContents.length} other)`);
+
+            const rawHttpStructure = extractRepoStructure(allFilesForHttpExtraction);
+            const allHttpConnections = rawHttpStructure.httpConnections;
+            setHttpConnections(allHttpConnections);
+            setCrossFileCalls(rawHttpStructure.crossFileCalls || []);
+            setRepoFiles(rawHttpStructure.files.map(f => ({
+                path: f.path,
+                functions: f.functions.map(fn => ({ name: fn.name, calls: fn.calls, line: fn.line }))
+            })));
+            pipelineStats.analyzed.httpConnections = allHttpConnections.length;
+            pipelineStats.detected.httpFiles = httpSourceContents.length;
+            httpConnectionsContext = formatHttpConnectionsForPrompt(rawHttpStructure);
+            if (allHttpConnections.length > 0) {
+                log(`Found ${allHttpConnections.length} HTTP connection(s) between services:`);
+                for (const conn of allHttpConnections) {
+                    log(`  ${vscode.workspace.asRelativePath(conn.client.file)}::${conn.client.function} → ${vscode.workspace.asRelativePath(conn.handler.file)}::${conn.handler.function}`);
+                    log(`    (${conn.client.method} ${conn.client.normalizedPath})`);
+                }
+            } else {
+                log(`No HTTP connections detected`);
+            }
+
+            // Discover additional files via HTTP handler tracing (only needed for first run)
+            if (isFirstRun) {
+                const allHttpHandlers = new Set<string>();
+                for (const conn of allHttpConnections) {
+                    if (!workflowPaths.has(conn.handler.file)) {
+                        allHttpHandlers.add(conn.handler.file);
+                    }
+                }
+
+                const llmConnectedHandlers = traceCallGraphToLLM(rawHttpStructure, allHttpHandlers);
+
+                const httpClientFilesToAdd = new Set<string>();
+                const httpHandlerFilesToAdd = new Set<string>();
+                for (const conn of allHttpConnections) {
+                    const handlerConnectedToLLM = llmConnectedHandlers.has(conn.handler.file) ||
+                        rawHttpStructure.files.find(f => f.path === conn.handler.file)?.functions.some(f => f.hasLLMCall);
+
+                    if (handlerConnectedToLLM) {
+                        if (!workflowPaths.has(conn.client.file)) {
+                            httpClientFilesToAdd.add(conn.client.file);
+                        }
+                        if (!workflowPaths.has(conn.handler.file)) {
+                            httpHandlerFilesToAdd.add(conn.handler.file);
+                        }
+                    }
+                }
+
+                if (httpClientFilesToAdd.size > 0) {
+                    pipelineStats.detected.httpClientFilesAdded = httpClientFilesToAdd.size;
+                    log(`\nAdding ${httpClientFilesToAdd.size} HTTP client file(s) to analysis:`);
+                    for (const clientFile of httpClientFilesToAdd) {
+                        log(`  + ${vscode.workspace.asRelativePath(clientFile)}`);
+                        const found = httpSourceContents.find(f => f.path === clientFile);
+                        if (found) {
+                            allFileContents.push(found);
+                            workflowPaths.add(clientFile);
+                        }
+                    }
+                }
+
+                if (httpHandlerFilesToAdd.size > 0) {
+                    log(`\nAdding ${httpHandlerFilesToAdd.size} HTTP handler file(s) to analysis:`);
+                    for (const handlerFile of httpHandlerFilesToAdd) {
+                        log(`  + ${vscode.workspace.asRelativePath(handlerFile)}`);
+                        const found = httpSourceContents.find(f => f.path === handlerFile);
+                        if (found) {
+                            allFileContents.push(found);
+                            workflowPaths.add(handlerFile);
+                        }
+                    }
+
+                    const llmConnectedFiles = traceCallGraphToLLM(rawHttpStructure, httpHandlerFilesToAdd);
+
+                    const llmFilesToAdd: string[] = [];
+                    for (const llmFile of llmConnectedFiles) {
+                        if (!workflowPaths.has(llmFile)) {
+                            llmFilesToAdd.push(llmFile);
+                        }
+                    }
+
+                    if (llmFilesToAdd.length > 0) {
+                        log(`\nAdding ${llmFilesToAdd.length} LLM file(s) via call graph tracing:`);
+                        for (const llmFile of llmFilesToAdd) {
+                            log(`  + ${vscode.workspace.asRelativePath(llmFile)}`);
+                            const found = httpSourceContents.find(f => f.path === llmFile);
+                            if (found) {
+                                allFileContents.push(found);
+                                workflowPaths.add(llmFile);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        // Subsequent runs: start HTTP scan in background, don't block graph display
+        // First runs: HTTP scan must complete before file picker (discovers additional files)
+        let httpScanPromise: Promise<void> | null = null;
+        if (!isFirstRun) {
+            httpScanPromise = runHttpScan();
+        } else {
+            await runHttpScan();
+        }
+
+        // Prune stale cache entries for files that no longer exist
+        const existingFilePaths = allFileContents.map(f => f.path);
+        const pruned = await cache.pruneStaleEntries(existingFilePaths);
+        if (pruned > 0) {
+            log(`Pruned ${pruned} stale cache entries`);
+        }
 
         if (!isFirstRun) {
             // SUBSEQUENT RUN: Silent background analysis
@@ -329,11 +333,21 @@ export async function analyzeWorkspace(
                     const newGraphs: any[] = [];
 
                     if (uncachedCount === 0) {
-                        // All files up to date - show cached graph
+                        // All files up to date - show cached graph immediately
                         log(`✓ All ${fileContents.length} files up to date`);
                         const selectedPaths = fileContents.map(f => f.path);
                         const mergedGraph = await cache.getMergedGraph(selectedPaths);
-                        webview.show(withHttpEdges(mergedGraph, log)!);
+                        webview.show(mergedGraph!);
+
+                        // Apply HTTP edges once scan completes (non-blocking)
+                        if (httpScanPromise) {
+                            httpScanPromise.then(() => {
+                                const updated = withHttpEdges(mergedGraph, log);
+                                if (updated && updated.edges.length > mergedGraph!.edges.length) {
+                                    webview.updateGraph(updated);
+                                }
+                            });
+                        }
                         return;
                     }
 
@@ -347,13 +361,16 @@ export async function analyzeWorkspace(
                     const allCached = await cache.getMergedGraph();
                     if (allCached && allCached.nodes.length > 0) {
                         log(`Showing ${allCached.nodes.length} cached nodes while analyzing ${uncachedCount} more...`);
-                        webview.show(withHttpEdges(allCached, log)!, { loading: true });
+                        webview.show(allCached, { loading: true });
                     } else {
                         log(`No cached graphs to show, showing loading...`);
                         webview.showLoading(`Analyzing ${uncachedCount} file${uncachedCount !== 1 ? 's' : ''}...`);
                     }
 
                     const filesToAnalyze = cacheResult.uncached;
+
+                    // Ensure HTTP scan is done before sending to LLM (needs httpConnectionsContext)
+                    if (httpScanPromise) await httpScanPromise;
 
                     // Log cost estimate (user already saw live estimate in file picker)
                     const costEstimate = estimateAnalysisCost(filesToAnalyze);
@@ -377,6 +394,7 @@ export async function analyzeWorkspace(
 
                     webview.notifyAnalysisStarted();
                     webview.startBatchProgress(batches.length);
+                    cache.startMultiBatchAnalysis(batches.length);
 
                     const maxConcurrency = CONFIG.CONCURRENCY.MAX_PARALLEL;
                     const costAggregator = new CostAggregator();
@@ -425,6 +443,7 @@ export async function analyzeWorkspace(
 
                                 await cache.setAnalysisResult(graph, contentMap);
                                 cacheCallGraphsForFiles(contentMap, workspaceRoot);
+                                cache.batchCompleted();
 
                                 // Incremental graph update - only if THIS batch added nodes
                                 if (graph.nodes.length > 0) {
@@ -445,6 +464,7 @@ export async function analyzeWorkspace(
                                 return graph;
                             } catch (error: any) {
                                 log(`Batch ${batchIndex + 1} failed: ${error.message}`);
+                                cache.batchCompleted();  // Still decrement to prevent stuck state
                                 return null; // Don't throw - let other batches continue
                             }
                         });
@@ -635,6 +655,7 @@ export async function analyzeWorkspace(
 
                 // Update progress with correct batch total
                 webview.startBatchProgress(batches.length);
+                cache.startMultiBatchAnalysis(batches.length);
 
                 // Detect all AI services from uncached files
                 let framework: string | null = null;
@@ -667,6 +688,9 @@ export async function analyzeWorkspace(
                         for (const f of files) contentMap[f.path] = f.content;
                         await cache.setAnalysisResult(graph, contentMap);
                         cacheCallGraphsForFiles(contentMap, workspaceRoot);
+                        cache.batchCompleted();
+                    } else {
+                        cache.batchCompleted();
                     }
                 }
 
@@ -869,10 +893,11 @@ export async function analyzeWorkspace(
                                 }
                             }
                         }
-                        // Note: batchCompleted already called in analyzeBatch on success
+                        // Note: batchCompleted already called in cacheBatchGraph on success
                         // For non-throwing failures (null return), we still need to mark progress
                         if (!batchGraph) {
                             webview.batchCompleted(0);
+                            cache.batchCompleted();  // Still decrement to prevent stuck state
                         }
                         log(`✓ Progress: ${completedBatchCount}/${batches.length} batches`);
                         return batchGraph;
@@ -881,6 +906,7 @@ export async function analyzeWorkspace(
                         completedBatchCount++;
                         // Mark failed batch as processed (0 files analyzed)
                         webview.batchCompleted(0);
+                        cache.batchCompleted();  // Still decrement to prevent stuck state
                         return null;
                     }
                 });

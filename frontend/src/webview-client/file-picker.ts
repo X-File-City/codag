@@ -250,9 +250,9 @@ export class FilePicker {
                         ${this.pricing ? `<span class="file-picker-cost" id="cost-estimate"></span>` : ''}
                     </div>
                     <div class="file-picker-actions">
-                        <button class="file-picker-btn file-picker-btn-danger" id="file-picker-clear-cache">Delete Cache & Reanalyze</button>
+                        <button class="file-picker-btn file-picker-btn-danger" id="file-picker-clear-cache" ${this.selectedPaths.size === 0 ? 'disabled' : ''}>Delete Cache & Reanalyze</button>
                         <button class="file-picker-btn file-picker-btn-cancel" id="file-picker-cancel">Cancel</button>
-                        <button class="file-picker-btn file-picker-btn-primary" id="file-picker-analyze">Analyze</button>
+                        <button class="file-picker-btn file-picker-btn-primary" id="file-picker-analyze" ${this.selectedPaths.size === 0 ? 'disabled' : ''}>Analyze</button>
                     </div>
                 </div>
             </div>
@@ -432,6 +432,10 @@ export class FilePicker {
         const analyzeBtn = this.modal.querySelector('#file-picker-analyze');
         analyzeBtn?.addEventListener('click', () => {
             const paths = Array.from(this.selectedPaths);
+            if (paths.length === 0) {
+                // Button should be disabled, but double-check
+                return;
+            }
             this.close();
             this.resolvePromise?.(paths);
         });
@@ -454,6 +458,10 @@ export class FilePicker {
         const clearCacheBtn = this.modal.querySelector('#file-picker-clear-cache');
         clearCacheBtn?.addEventListener('click', () => {
             const paths = Array.from(this.selectedPaths);
+            if (paths.length === 0) {
+                // Button should be disabled, but double-check
+                return;
+            }
             this.close();
             this.resolvePromise?.(null);
             // Send selected files to clear cache and reanalyze
@@ -549,6 +557,16 @@ export class FilePicker {
         const countEl = this.modal?.querySelector('#selected-count');
         if (countEl) {
             countEl.textContent = String(this.selectedPaths.size);
+        }
+
+        // Update button disabled states based on selection
+        const analyzeBtn = this.modal?.querySelector('#file-picker-analyze') as HTMLButtonElement;
+        const clearCacheBtn = this.modal?.querySelector('#file-picker-clear-cache') as HTMLButtonElement;
+        if (analyzeBtn) {
+            analyzeBtn.disabled = this.selectedPaths.size === 0;
+        }
+        if (clearCacheBtn) {
+            clearCacheBtn.disabled = this.selectedPaths.size === 0;
         }
 
         this.updateSelectAllState();

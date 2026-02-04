@@ -66,15 +66,15 @@ export class APIClient {
     }
 
     /**
-     * Check if the backend is reachable.
+     * Check if the backend is reachable and API key is configured.
      * Uses a short timeout so it fails fast.
      */
-    async checkHealth(): Promise<boolean> {
+    async checkHealth(): Promise<{ healthy: boolean; apiKeyStatus?: 'valid' | 'invalid' | 'missing' }> {
         try {
-            await axios.get(`${this.baseURL}/health`, { timeout: 3000 });
-            return true;
+            const resp = await axios.get(`${this.baseURL}/health`, { timeout: 5000 });
+            return { healthy: true, apiKeyStatus: resp.data.api_key_status || 'valid' };
         } catch {
-            return false;
+            return { healthy: false };
         }
     }
 

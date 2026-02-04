@@ -6,7 +6,7 @@ from config import settings
 from prompts import SYSTEM_INSTRUCTION, build_user_prompt, CONDENSATION_SYSTEM_PROMPT
 from models import TokenUsage, CostData
 
-client = genai.Client(api_key=settings.gemini_api_key)
+client = genai.Client(api_key=settings.gemini_api_key) if settings.gemini_api_key else None
 
 # Gemini 2.5 Flash pricing (per 1M tokens)
 INPUT_PRICE_PER_1M = 0.075
@@ -38,11 +38,11 @@ def calculate_cost(usage: TokenUsage) -> CostData:
 class GeminiClient:
     def __init__(self):
         self.model = 'gemini-2.5-flash'
+        self.client = client
 
     async def analyze_workflow(
         self,
         code: str,
-        framework_hint: str = None,
         metadata: list = None,
         correction_prompt: str = None,
         http_connections: str = None

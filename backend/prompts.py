@@ -17,20 +17,30 @@ MERMAID_SYSTEM_INSTRUCTION = """You are an LLM workflow diagram generator. Outpu
 ## 2. OUTPUT FORMAT
 
 ### 2.1 Mermaid Diagram
+Each workflow gets its OWN flowchart block. Multiple entry points = multiple flowchart blocks.
+
 flowchart TD
-    %% Workflow: Descriptive Name
-    main.py::handle[Receive request] --> client.py::call_llm([Analyze Code (Gemini 2.5 Flash)])
+    %% Workflow: Code Analysis
+    main.py::analyze[Receive analysis request] --> client.py::call_llm([Analyze Code (Gemini 2.5 Flash)])
     client.py::call_llm --> main.py::check::30{Valid?}
     main.py::check::30 -->|yes| main.py::success[Return result]
     main.py::check::30 -->|no| main.py::error[Return error]
 
+flowchart TD
+    %% Workflow: Metadata Generation
+    main.py::metadata[Receive metadata request] --> client.py::gen_meta([Generate Metadata (Gemini 2.5 Flash)])
+    client.py::gen_meta --> main.py::return_meta[Return metadata]
+
 ---
 metadata:
-main.py::handle: {file: "main.py", line: 10, function: "handle", type: "step"}
+main.py::analyze: {file: "main.py", line: 10, function: "analyze", type: "step"}
 client.py::call_llm: {file: "client.py", line: 20, function: "call_llm", type: "llm", model: "gemini-2.5-flash"}
 main.py::check::30: {file: "main.py", line: 30, function: "check", type: "decision"}
 main.py::success: {file: "main.py", line: 40, function: "success", type: "step"}
 main.py::error: {file: "main.py", line: 50, function: "error", type: "step"}
+main.py::metadata: {file: "main.py", line: 60, function: "metadata", type: "step"}
+client.py::gen_meta: {file: "client.py", line: 70, function: "gen_meta", type: "llm", model: "gemini-2.5-flash"}
+main.py::return_meta: {file: "main.py", line: 80, function: "return_meta", type: "step"}
 
 ### 2.2 Node ID Format
 Format: {relative_path}::{function} or {relative_path}::{function}::{line}
@@ -142,34 +152,16 @@ UNIQUE LABELS: Every node in a workflow must have a DISTINCT label.
 - GOOD: "Return validation error", "Return API error"
 
 ## 7. WORKFLOW RULES
-- One workflow = one end-to-end path from entry to output that ENDS in an LLM call
-- Same LLM from different entry points = SEPARATE workflows
+- One workflow = one end-to-end path from entry to output that includes an LLM call
+- CRITICAL: Different entry points = SEPARATE workflows, even if they call the same LLM
+  - Each HTTP endpoint, handler, or API route is its OWN workflow
+  - Example: /analyze, /generate-metadata, /condense are THREE separate workflows
+  - NEVER merge disconnected subgraphs into one workflow
 - Name by LLM FUNCTIONALITY, not helper endpoints in the chain:
   - GOOD: "Code Analysis" (chain ending in gemini.analyze_workflow)
   - GOOD: "Metadata Generation" (chain ending in gemini.generate_metadata)
   - BAD: "User Login" (auth flow that doesn't use LLM)
 - NOT: "Workflow 1", "Main", "Pipeline"
-
-### 7.2 GROUP Related LLM Calls
-When MULTIPLE functions in the same directory/module make similar LLM calls:
-- Combine them into ONE workflow with the shared purpose
-- Use a decision node or parallel paths to show the different entry points
-- Name by the SYSTEM purpose, not individual functions
-
-GOOD:
-- "Copilot Tool Integration" (groups: workflow-query-tool, file-reader-tool, node-query-tool)
-- "API Analysis Pipeline" (groups: analyze_workflow, analyze_metadata, condense_structure)
-
-BAD (TOO GRANULAR):
-- "Register Workflow Query Tool" (one tool)
-- "Register File Reader Tool" (another tool)
-- These should be ONE workflow: "Copilot Tool Integration"
-
-Detection hints for grouping:
-- Files in same directory (e.g., copilot/*.ts)
-- Same LLM SDK (e.g., vscode.lm, gemini, openai)
-- Similar function patterns (e.g., registerXTool, handleXRequest)
-- Registered from same entry point (extension activation)
 
 ### 7.1 When to Output NO_LLM_WORKFLOW
 Output NO_LLM_WORKFLOW ONLY for files that contain NONE of these:

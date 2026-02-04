@@ -25,11 +25,6 @@ export const GROUP_BOUNDS_PADDING_TOP = 20;
 export const GROUP_BOUNDS_PADDING_BOTTOM = 20;
 
 // ===== GROUP UI OFFSETS =====
-export const GROUP_TITLE_OFFSET_X = 40;
-export const GROUP_TITLE_OFFSET_Y = 24;
-export const GROUP_COLLAPSE_BTN_X = 10;
-export const GROUP_COLLAPSE_BTN_Y = 8;
-export const GROUP_COLLAPSE_BTN_SIZE = 24;
 export const GROUP_STROKE_WIDTH = 1.5;
 
 // ===== EDGE STYLING =====
@@ -48,15 +43,11 @@ export const WORKFLOW_SPACING = 15;
 
 // ===== INTERACTION =====
 export const DRAG_THRESHOLD = 5;
-export const GRID_SIZE = 5;
 export const TOOLTIP_OFFSET_X = 15;
 export const TOOLTIP_OFFSET_Y = 10;
 
 // ===== MINIMAP =====
 export const MINIMAP_PADDING = 10;
-
-// ===== NODE ICON =====
-export const NODE_ICON_SCALE = 0.8;
 
 // ===== ARROW =====
 export const ARROW_HEAD_LENGTH = 8;

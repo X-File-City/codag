@@ -51,6 +51,16 @@ Thumbs.db
 .claude/
 CLAUDE.md
 
+# Build artifacts
+frontend/media/tree-sitter/
+
 # Cache directories
 .codag-cache/
 .cache/
+
+# Benchmark/dev tools
+backend/benchmark/
+
+# Launch planning (private)
+LAUNCH_PLAN.md
+PRODUCT_HUNT.txt

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; script-src 'nonce-{{nonce}}' https://d3js.org https://cdn.jsdelivr.net; img-src {{cspSource}} data:; font-src {{cspSource}} https://fonts.gstatic.com https://cdn.jsdelivr.net;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; script-src 'nonce-{{nonce}}' https://d3js.org https://cdn.jsdelivr.net; img-src {{cspSource}} data: blob:; font-src {{cspSource}} https://fonts.gstatic.com https://cdn.jsdelivr.net;">
     <title>LLM Architecture</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -46,27 +46,71 @@
             <button id="btn-analyze" class="analyze-btn" title="Analyze Files">
                 <svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
             </button>
+            <span class="controls-divider"></span>
+            <button id="btn-export" class="export-btn" title="Export as PNG">
+                <svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>
+            </button>
         </div>
     </div>
 
     <div id="graph"></div>
 
-    <div id="backendError" class="backend-error" style="display: none;">
-        <div class="backend-error-card">
-            <div class="backend-error-icon">
+    <div id="backendError" class="error-overlay" style="display: none;">
+        <div class="error-overlay-card">
+            <div class="error-overlay-icon error-overlay-icon--error">
                 <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5">
                     <path d="M12 9v4m0 4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
             </div>
-            <h2 class="backend-error-title">Backend not running</h2>
-            <p class="backend-error-desc">Codag requires a self-hosted backend server for AI analysis. See the <a href="https://github.com/michaelzixizhou/codag#self-hosting-the-backend" style="color: #7c83ff; text-decoration: underline;">setup guide</a> to get started.</p>
-            <div class="backend-error-commands">
-                <code>docker compose up -d</code>
-                <span class="backend-error-or">or</span>
-                <code>make run</code>
+            <h2 class="error-overlay-title">Backend not running</h2>
+            <p class="error-overlay-desc">The Codag backend server is not reachable. This can happen if the server isn't started, or if the <code>GEMINI_API_KEY</code> is missing from <code>backend/.env</code>.</p>
+            <div class="error-overlay-steps">
+                <div class="error-overlay-step">
+                    <span class="error-overlay-step-num">1</span>
+                    <span>Make sure <code>backend/.env</code> contains your API key:</span>
+                </div>
+                <code class="error-overlay-code">GEMINI_API_KEY=your-key-here</code>
+                <div class="error-overlay-step">
+                    <span class="error-overlay-step-num">2</span>
+                    <span>Start the backend server:</span>
+                </div>
+                <div class="error-overlay-commands">
+                    <code class="error-overlay-code">make run</code>
+                    <span class="error-overlay-or">or</span>
+                    <code class="error-overlay-code">docker compose up -d</code>
+                </div>
             </div>
-            <p class="backend-error-hint">The backend runs on <code>localhost:52104</code> by default. You can change this in Settings &gt; Codag: API URL.</p>
-            <button id="btn-retry-backend" class="backend-error-retry">Retry</button>
+            <p class="error-overlay-hint">The backend runs on <code>localhost:52104</code> by default. Change it in Settings &gt; Codag: API URL.</p>
+            <button id="btn-retry-backend" class="error-overlay-btn">Retry</button>
+        </div>
+    </div>
+
+    <div id="apiKeyError" class="error-overlay" style="display: none;">
+        <div class="error-overlay-card">
+            <div class="error-overlay-icon error-overlay-icon--key">
+                <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M15 7a4 4 0 0 1-4 4H5m0 0V7m0 4l6.5 6.5M21 3l-6 6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </div>
+            <h2 class="error-overlay-title">Invalid Gemini API key</h2>
+            <p class="error-overlay-desc">The Gemini API rejected the request. Your API key may be invalid or expired.</p>
+            <div class="error-overlay-steps">
+                <div class="error-overlay-step">
+                    <span class="error-overlay-step-num">1</span>
+                    <span>Get a free key at <a href="https://aistudio.google.com/apikey" class="error-overlay-link">aistudio.google.com/apikey</a></span>
+                </div>
+                <div class="error-overlay-step">
+                    <span class="error-overlay-step-num">2</span>
+                    <span>Update <code>backend/.env</code>:</span>
+                </div>
+                <code class="error-overlay-code">GEMINI_API_KEY=your-new-key-here</code>
+                <div class="error-overlay-step">
+                    <span class="error-overlay-step-num">3</span>
+                    <span>Restart the backend:</span>
+                </div>
+                <code class="error-overlay-code">make stop && make run</code>
+            </div>
+            <button id="btn-retry-apikey" class="error-overlay-btn">Retry</button>
         </div>
     </div>
 
@@ -119,6 +163,7 @@
                 <label>Source Location</label>
                 <a id="panelSource" class="source-link" href="#">-</a>
             </div>
+            <div id="referenceSection" class="panel-section" style="display: none;"></div>
             <div id="incomingSection" class="panel-section">
                 <label>Incoming Data</label>
                 <div id="panelIncoming">-</div>

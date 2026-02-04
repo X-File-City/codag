@@ -1,18 +1,16 @@
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
 import json
 
 from models import (
     AnalyzeRequest, WorkflowGraph,
-    MetadataRequest, MetadataBundle, FileMetadataResult, FunctionMetadata,
-    CondenseRequest, CondenseResponse,
+    MetadataRequest, FileMetadataResult, FunctionMetadata,
+    CondenseRequest,
     TokenUsage, CostData, AnalyzeResponse
 )
 from prompts import build_metadata_only_prompt, USE_MERMAID_FORMAT
 from mermaid_parser import parse_mermaid_response
 from gemini_client import gemini_client
-from analyzer import static_analyzer
 from config import settings
 
 app = FastAPI(title="Codag")
@@ -33,11 +31,13 @@ app.add_middleware(
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_workflow(
     request: AnalyzeRequest,
-    response: Response,
 ):
     """
     Analyze code for LLM workflow patterns.
     """
+    if not gemini_client.client:
+        raise HTTPException(status_code=503, detail="Gemini API key not configured")
+
     # Track cumulative cost across retries
     total_usage = TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0, cached_tokens=0)
     total_cost = CostData(input_cost=0.0, output_cost=0.0, total_cost=0.0)
@@ -58,14 +58,8 @@ async def analyze_workflow(
             detail=f"Number of files ({len(request.file_paths)}) exceeds maximum allowed ({MAX_FILES}). Try analyzing fewer files at once."
         )
 
-    # Static analysis
-    framework = request.framework_hint or static_analyzer.detect_framework(
-        request.code,
-        request.file_paths[0] if request.file_paths else ""
-    )
-
     # Convert metadata to dict format
-    metadata_dicts = [m.dict() for m in request.metadata] if request.metadata else None
+    metadata_dicts = [m.model_dump() for m in request.metadata] if request.metadata else None
 
     # Helper to accumulate usage/cost
     def accumulate_cost(usage: TokenUsage, cost: CostData):
@@ -86,7 +80,6 @@ async def analyze_workflow(
     try:
         result, usage, cost = await gemini_client.analyze_workflow(
             request.code,
-            framework,
             metadata_dicts,
             http_connections=request.http_connections
         )
@@ -145,7 +138,6 @@ Please re-analyze the code and output in the CORRECT format."""
                         try:
                             result, retry_usage, retry_cost = await gemini_client.analyze_workflow(
                                 request.code,
-                                framework,
                                 metadata_dicts,
                                 correction_prompt
                             )
@@ -173,48 +165,7 @@ Please re-analyze the code and output in the CORRECT format."""
                     node.source.file = fix_file_path(node.source.file, request.file_paths)
 
             return AnalyzeResponse(graph=graph, usage=total_usage, cost=total_cost)
-        else:
-            # Parse JSON format (legacy)
-            if result.startswith("```json"):
-                result = result[7:]
-            if result.startswith("```"):
-                result = result[3:]
-            if result.endswith("```"):
-                result = result[:-3]
 
-            try:
-                graph_data = json.loads(result.strip())
-            except json.JSONDecodeError as json_err:
-                result_clean = result.strip()
-                if not result_clean.endswith('}'):
-                    open_braces = result_clean.count('{') - result_clean.count('}')
-                    open_brackets = result_clean.count('[') - result_clean.count(']')
-                    last_comma = result_clean.rfind(',')
-                    if last_comma > result_clean.rfind('}') and last_comma > result_clean.rfind(']'):
-                        result_clean = result_clean[:last_comma]
-                    result_clean += ']' * max(0, open_brackets)
-                    result_clean += '}' * max(0, open_braces)
-                    try:
-                        graph_data = json.loads(result_clean)
-                    except:
-                        raise HTTPException(
-                            status_code=500,
-                            detail=f"Analysis failed: Response was truncated. {str(json_err)}"
-                        )
-                else:
-                    raise
-
-            # Empty graph is valid - return early
-            if not graph_data.get('nodes'):
-                empty_graph = WorkflowGraph(nodes=[], edges=[], llms_detected=[], workflows=[])
-                return AnalyzeResponse(graph=empty_graph, usage=total_usage, cost=total_cost)
-
-            for node in graph_data.get('nodes', []):
-                if node.get('source') and node['source'].get('file'):
-                    node['source']['file'] = fix_file_path(node['source']['file'], request.file_paths)
-
-            graph = WorkflowGraph(**graph_data)
-            return AnalyzeResponse(graph=graph, usage=total_usage, cost=total_cost)
     except HTTPException:
         raise
     except Exception as e:
@@ -229,6 +180,8 @@ async def analyze_metadata_only(request: MetadataRequest):
     Structure is already known from local tree-sitter analysis.
     Only needs LLM for human-readable labels and descriptions.
     """
+    if not gemini_client.client:
+        raise HTTPException(status_code=503, detail="Gemini API key not configured")
     # Build prompt from structure context
     files_data = [f.model_dump() for f in request.files]
     prompt = build_metadata_only_prompt(files_data)
@@ -298,6 +251,8 @@ async def condense_structure(request: CondenseRequest):
     2. Identify LLM/AI workflow entry points
     3. Create condensed structure for cross-batch context
     """
+    if not gemini_client.client:
+        raise HTTPException(status_code=503, detail="Gemini API key not configured")
     try:
         condensed, usage, cost = await gemini_client.condense_repo_structure(request.raw_structure)
         return {
@@ -311,7 +266,16 @@ async def condense_structure(request: CondenseRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    if not settings.gemini_api_key:
+        return {"status": "ok", "api_key_status": "missing"}
+
+    # Validate key with a lightweight SDK call
+    try:
+        list(gemini_client.client.models.list())
+        return {"status": "ok", "api_key_status": "valid"}
+    except Exception as e:
+        print(f"[HEALTH] Gemini API key invalid: {e}")
+        return {"status": "ok", "api_key_status": "invalid"}
 
 
 if __name__ == "__main__":

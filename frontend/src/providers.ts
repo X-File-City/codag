@@ -417,8 +417,11 @@ export const AI_ENDPOINT_PATTERNS: RegExp[] = [
 
 export const GENERIC_LLM_CALL_PATTERNS: RegExp[] = [
     /\.chat\s*\(/,
+    /\.chats\s*\(/,         // Swift OpenAI SDK: openAI.chats(query:)
     /\.complete\s*\(/,
     /\.generate\s*\(/,
+    /ChatCompletion/,        // Go/Java/Python old SDK: CreateChatCompletion, createChatCompletion, ChatCompletion.create
+    /\.embeddings\s*\(/,     // Embedding APIs: client.embeddings(), openai.embeddings.create()
 ];
 
 // =============================================================================
@@ -512,15 +515,90 @@ export function mightContainLLM(text: string): boolean {
     return QUICK_SCAN_PATTERNS.some(pattern => pattern.test(text));
 }
 
-/**
- * Get provider display name from ID.
- */
-export function getProviderDisplayName(providerId: string): string {
-    const provider = LLM_PROVIDERS.find(p => p.id === providerId);
-    if (provider) return provider.displayName;
+// =============================================================================
+// HTTP Server Framework Detection
+// =============================================================================
 
-    const framework = LLM_FRAMEWORKS.find(f => f.id === providerId);
-    if (framework) return framework.displayName;
+/** Package identifiers for HTTP server frameworks.
+ *  Used to confirm a file is a server (not client) when detecting route handlers.
+ *  Adding a new framework = add one string here. */
+export const HTTP_SERVER_PACKAGES: string[] = [
+    // Python
+    'fastapi', 'flask', 'django', 'starlette', 'sanic', 'tornado', 'aiohttp',
+    // JS/TS
+    'express', 'hono', 'fastify', 'koa', 'koa-router', '@koa/router', 'polka',
+    'restify', '@hapi/hapi', 'oak',
+    // Go (partial import paths)
+    'gin-gonic/gin', 'gofiber/fiber', 'labstack/echo', 'gorilla/mux',
+    'chi', 'httprouter',
+    // Rust
+    'actix-web', 'axum', 'rocket', 'warp',
+    // Java
+    'spring', 'javalin', 'spark',
+];
 
-    return providerId;
+/** Common variable names used for router/app instances across frameworks.
+ *  Used by both Python decorator detection and JS/TS/Go method-call detection. */
+export const ROUTER_OBJECT_NAMES: Set<string> = new Set([
+    'app', 'router', 'server', 'api',
+    'r', 'e', 'g',           // Go conventions (gin: r, echo: e)
+    'bp', 'blueprint',        // Flask blueprints
+    'fastify',                // Fastify convention
+    'group',                  // Go route groups
+]);
+
+/** File-convention route detection (Next.js App Router, SvelteKit, etc.)
+ *  Files matching these patterns with matching exports = route handlers. */
+export const ROUTE_FILE_CONVENTIONS: {
+    filePatterns: RegExp[];
+    exportNames: string[];
+    deriveRoute: (filePath: string) => string | null;
+}[] = [
+    {
+        // Next.js App Router: app/api/chat/route.ts exports POST
+        filePatterns: [/\/app\/.*\/route\.[jt]sx?$/],
+        exportNames: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'],
+        deriveRoute: (fp) => {
+            const m = fp.match(/app\/(.*?)\/route\.[jt]sx?$/);
+            if (!m) return null;
+            return ('/' + m[1])
+                .replace(/\/\([^)]+\)/g, '')           // strip route groups
+                .replace(/\[\.\.\.([^\]]+)\]/g, ':$1') // [...slug] → :slug
+                .replace(/\[([^\]]+)\]/g, ':$1')       // [id] → :id
+                || '/';
+        },
+    },
+    {
+        // Next.js Pages Router: pages/api/chat.ts
+        filePatterns: [/\/pages\/api\/.*\.[jt]sx?$/],
+        exportNames: ['default'],
+        deriveRoute: (fp) => {
+            const m = fp.match(/pages\/(api\/.*?)(?:\/index)?\.[jt]sx?$/);
+            return m ? '/' + m[1] : null;
+        },
+    },
+    {
+        // SvelteKit: src/routes/api/chat/+server.ts exports GET/POST
+        filePatterns: [/\/src\/routes\/.*\/\+server\.[jt]s$/],
+        exportNames: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+        deriveRoute: (fp) => {
+            const m = fp.match(/src\/routes\/(.*?)\/\+server\.[jt]s$/);
+            return m ? '/' + m[1].replace(/\([^)]+\)\/?/g, '') : null;
+        },
+    },
+];
+
+/** Check if a file's imports indicate it uses an HTTP server framework */
+export function hasHttpServerImport(fileText: string): boolean {
+    const lower = fileText.toLowerCase();
+    return HTTP_SERVER_PACKAGES.some(pkg => lower.includes(pkg));
 }
+
+/** Check if a file path matches a route file convention. Returns matching convention or null. */
+export function matchRouteFileConvention(filePath: string): typeof ROUTE_FILE_CONVENTIONS[0] | null {
+    for (const conv of ROUTE_FILE_CONVENTIONS) {
+        if (conv.filePatterns.some(p => p.test(filePath))) return conv;
+    }
+    return null;
+}
+

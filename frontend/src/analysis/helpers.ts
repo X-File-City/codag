@@ -3,6 +3,9 @@
  */
 
 import { WorkflowGraph } from '../api';
+import { addHttpConnectionEdges, addCrossFileCallEdges, addHttpCallerEdges } from '../edge-resolver';
+import { getHttpConnections, getCrossFileCalls, getRepoFiles } from './state';
+import { RawRepoStructure, FileStructure } from '../repo-structure';
 
 /**
  * Run tasks with bounded concurrency using a worker pool pattern.
@@ -34,9 +37,6 @@ export async function runWithConcurrency<T>(
 
     return results;
 }
-import { addHttpConnectionEdges, addCrossFileCallEdges, addHttpCallerEdges } from '../edge-resolver';
-import { getHttpConnections, getCrossFileCalls, getRepoFiles } from './state';
-import { RawRepoStructure, FileStructure } from '../repo-structure';
 
 /**
  * Add statically-detected edges (HTTP connections + cross-file calls) to a graph.
@@ -69,6 +69,41 @@ export function withHttpEdges(
     if (crossFileCalls.length > 0) {
         const callResult = addCrossFileCallEdges(result, crossFileCalls, log);
         result = callResult.graph;
+    }
+
+    // Ensure ALL nodes referenced by edges are in a workflow group.
+    // Without a workflow, ELK layout crashes ("Referenced shape does not exist").
+    // This covers both new stub nodes AND existing nodes that gained edges
+    // (e.g. addHttpCallerEdges linking to nodes filtered out of workflows).
+    if (result.workflows) {
+        const workflowNodeIds = new Set(result.workflows.flatMap(wf => wf.nodeIds));
+        const nodeById = new Map(result.nodes.map(n => [n.id, n]));
+
+        // Find all node IDs referenced by edges
+        const referencedIds = new Set<string>();
+        for (const edge of result.edges) {
+            referencedIds.add(edge.source);
+            referencedIds.add(edge.target);
+        }
+
+        // Orphan nodes (referenced by edges but not in any workflow) are adopted
+        // by detectWorkflowGroups() via edge-based adoption — no need to create
+        // synthetic workflows here.
+    }
+
+    // Safety net: drop any edges referencing nodes that don't exist.
+    // Prevents ELK crash "Referenced shape does not exist".
+    {
+        const allNodeIds = new Set(result.nodes.map(n => n.id));
+        const before = result.edges.length;
+        result = {
+            ...result,
+            edges: result.edges.filter(e => allNodeIds.has(e.source) && allNodeIds.has(e.target))
+        };
+        const dropped = before - result.edges.length;
+        if (dropped > 0) {
+            log(`[HTTP] Dropped ${dropped} edges referencing non-existent nodes`);
+        }
     }
 
     return result;
@@ -131,7 +166,7 @@ export function traceCallGraphToLLM(repoStructure: RawRepoStructure, seedFiles: 
 
             const basePath = resolved.join('/');
             // Try with different extensions
-            for (const ext of ['', '.py', '.ts', '.js', '.tsx', '.jsx']) {
+            for (const ext of ['', '.py', '.ts', '.js', '.tsx', '.jsx', '.go', '.rs', '.c', '.h', '.cpp', '.hpp', '.swift', '.java', '.lua']) {
                 const tryPath = basePath + ext;
                 if (fileByPath.has(tryPath)) {
                     return tryPath;

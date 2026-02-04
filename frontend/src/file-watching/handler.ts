@@ -59,11 +59,35 @@ export async function scheduleFileAnalysis(
         return;
     }
 
-    // NOTE: We don't send immediate notification here.
-    // We wait for tree-sitter diff to know WHICH functions changed.
-    // Notification is sent after performLocalUpdate() completes.
+    // Ignore hidden directories (dotfiles like .vscode-dev, .git, etc.)
+    if (/[/\\]\./.test(filePath)) {
+        return;
+    }
 
-    // Clear existing timeout for this file
+    const relativePath = vscode.workspace.asRelativePath(filePath);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PHASE 1: INSTANT VISUAL FEEDBACK (T=0ms)
+    // Show "file being edited" indicator IMMEDIATELY before debounce.
+    // This makes vibecoding feel responsive while analysis happens in background.
+    // ═══════════════════════════════════════════════════════════════════════════
+    const cachedGraph = cache.getCachedGraphSync();
+    const fileHasNodesInGraph = cachedGraph?.nodes.some(n => n.source?.file === relativePath);
+
+    if (fileHasNodesInGraph) {
+        // Clear any existing transition timer for this file
+        clearActivelyEditing(filePath);
+
+        // Instant feedback: highlight ALL nodes from this file
+        // (We don't know which specific functions changed yet - that comes after analysis)
+        webview.notifyFileStateChange([{
+            filePath: relativePath,
+            state: 'active'
+            // No functions = highlights all nodes from file
+        }]);
+    }
+
+    // Clear existing debounce timeout for this file
     clearPendingChange(filePath);
 
     // Use shorter debounce for file creation (fast feedback for AI scaffolding)
@@ -78,17 +102,12 @@ export async function scheduleFileAnalysis(
         const localResult = await performLocalUpdate({ cache, log }, uri);
 
         if (localResult) {
-            // Local update succeeded
-            if (localResult.nodesAdded.length > 0 || localResult.nodesRemoved.length > 0 ||
-                localResult.edgesAdded > 0 || localResult.edgesRemoved > 0) {
-                const relativePath = vscode.workspace.asRelativePath(filePath);
+            const hasStructuralChanges = localResult.nodesAdded.length > 0 || localResult.nodesRemoved.length > 0 ||
+                localResult.edgesAdded > 0 || localResult.edgesRemoved > 0;
 
-                // Update graph in webview (with HTTP edges)
-                // Pass pending node IDs and file change info (applied after graph renders)
-                const fileChange = localResult.changedFunctions.length > 0
-                    ? { filePath: relativePath, functions: localResult.changedFunctions }
-                    : undefined;
-                webview.updateGraph(withHttpEdges(localResult.graph, log)!, localResult.needsMetadata, fileChange);
+            // Send graph update only when structure actually changed
+            if (hasStructuralChanges) {
+                webview.updateGraph(withHttpEdges(localResult.graph, log)!, localResult.needsMetadata);
                 log(`Graph updated locally (instant) via tree-sitter`);
 
                 // Queue for metadata if new nodes need labels
@@ -100,34 +119,44 @@ export async function scheduleFileAnalysis(
                         log(`Queued ${relativePath} for metadata batch (${context.functions.length} functions)`);
                     }
                 }
+            }
 
-                // === Live file indicator: Set timer to transition from active → changed ===
-                if (localResult.changedFunctions.length > 0) {
-                    // Clear existing transition timer
-                    clearActivelyEditing(filePath);
+            // ═══════════════════════════════════════════════════════════════════
+            // PHASE 2: REFINED FEEDBACK (after debounce + analysis)
+            // Now we know WHICH specific functions changed. Refine the highlighting
+            // to only those functions (others lose their highlight).
+            // ═══════════════════════════════════════════════════════════════════
+            const fileHasNodes = localResult.graph.nodes.some(n =>
+                n.source?.file === relativePath
+            );
 
-                    // Set timer to transition to "changed" state after inactivity
-                    const transitionTimer = setTimeout(() => {
-                        clearActivelyEditing(filePath);
-                        setChangedFunctions(filePath, localResult.changedFunctions);
-                        webview.notifyFileStateChange([{
-                            filePath: relativePath,
-                            functions: localResult.changedFunctions,
-                            state: 'changed'
-                        }]);
-                    }, config.activeToChangedMs);
-
-                    setActivelyEditing(filePath, {
-                        timer: transitionTimer,
-                        functions: localResult.changedFunctions
-                    });
-                }
-            } else {
-                // No structural changes - clear any existing indicators
+            if (fileHasNodes) {
+                // Clear existing transition timer
                 clearActivelyEditing(filePath);
-                clearChangedFunctions(filePath);
-                const relativePath = vscode.workspace.asRelativePath(filePath);
-                webview.notifyFileStateChange([{ filePath: relativePath, state: 'unchanged' }]);
+
+                // Refine: send active state with specific changed functions
+                // This will UN-highlight nodes not in the changedFunctions list
+                webview.notifyFileStateChange([{
+                    filePath: relativePath,
+                    functions: localResult.changedFunctions,
+                    state: 'active'
+                }]);
+
+                // Set timer to transition to "changed" state after inactivity
+                const transitionTimer = setTimeout(() => {
+                    clearActivelyEditing(filePath);
+                    setChangedFunctions(filePath, localResult.changedFunctions);
+                    webview.notifyFileStateChange([{
+                        filePath: relativePath,
+                        functions: localResult.changedFunctions,
+                        state: 'changed'
+                    }]);
+                }, config.activeToChangedMs);
+
+                setActivelyEditing(filePath, {
+                    timer: transitionTimer,
+                    functions: localResult.changedFunctions
+                });
             }
         } else {
             // Local update returned null - check if file was previously analyzed
@@ -140,7 +169,6 @@ export async function scheduleFileAnalysis(
 
                 // Clear file change indicator after LLM analysis
                 clearChangedFunctions(filePath);
-                const relativePath = vscode.workspace.asRelativePath(filePath);
                 webview.notifyFileStateChange([{ filePath: relativePath, state: 'unchanged' }]);
             }
             // If not cached, ignore - not an LLM file worth tracking

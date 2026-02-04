@@ -38,11 +38,12 @@ const DEFAULT_LAYOUT_OPTIONS: Record<string, string> = {
     // Layering strategy
     'elk.layered.layering.strategy': 'NETWORK_SIMPLEX',
 
-    // Edge label placement - labels placed on edges, not between layers
-    'elk.edgeLabels.inline': 'false',        // Don't reserve layer space for labels
+    // Edge label placement - inline=true accounts for label size in node spacing
+    'elk.edgeLabels.inline': 'true',
     'elk.edgeLabels.placement': 'CENTER',
-    'elk.spacing.labelLabel': '12',          // Min space between labels
-    'elk.spacing.labelNode': '8',            // Min space label-to-node
+    'elk.layered.edgeLabels.centerLabelPlacementStrategy': 'MEDIAN',
+    'elk.spacing.labelLabel': '12',
+    'elk.spacing.labelNode': '8',
 
     // DO NOT merge edges - keep them separate like circuit traces
     'elk.layered.mergeEdges': 'false',
@@ -159,10 +160,11 @@ export async function layoutWithELK(
             const label = labels[0];
             if (typeof label.x === 'number' && typeof label.y === 'number') {
                 // ELK returns top-left of label, convert to center
-                labelPositions.set(edge.id, {
+                const labelPos = {
                     x: label.x + (label.width || 0) / 2 + MARGIN,
                     y: label.y + (label.height || 0) / 2 + MARGIN,
-                });
+                };
+                labelPositions.set(edge.id, labelPos);
             }
         }
     }

@@ -1,9 +1,10 @@
 // HUD controls, zoom, and button tooltips
 import * as state from './state';
-import { getNodeWorkflowCount, getNodeOrCollapsedGroup, getVirtualNodeId } from './utils';
+import { getNodeOrCollapsedGroup } from './utils';
 import { renderMinimap } from './minimap';
 import { positionTooltipNearMouse } from './helpers';
 import { updateEdgeLabels, getElkEdgePath } from './edges';
+import { addWorkflowExportButtons } from './export';
 import {
     NODE_WIDTH, NODE_HEIGHT, NODE_HALF_WIDTH,
     GROUP_BOUNDS_PADDING_X, GROUP_BOUNDS_PADDING_TOP, GROUP_BOUNDS_PADDING_BOTTOM,
@@ -17,7 +18,10 @@ export function setupControls(): void {
     document.getElementById('btn-zoom-in')?.addEventListener('click', zoomIn);
     document.getElementById('btn-zoom-out')?.addEventListener('click', zoomOut);
     document.getElementById('btn-fit-screen')?.addEventListener('click', () => fitToScreen());
-    document.getElementById('btn-format')?.addEventListener('click', () => formatGraph());
+    document.getElementById('btn-format')?.addEventListener('click', () => {
+        formatGraph();
+        addWorkflowExportButtons();
+    });
     document.getElementById('btn-analyze')?.addEventListener('click', openAnalyzePanel);
     document.getElementById('legend-header')?.addEventListener('click', toggleLegend);
 
@@ -54,7 +58,7 @@ function zoomOut(): void {
 }
 
 function setupButtonTooltips(): void {
-    const tooltips = ['Zoom In', 'Zoom Out', 'Fit to Screen', 'Reset Layout', 'Analyze Files'];
+    const tooltips = ['Zoom In', 'Zoom Out', 'Fit to Screen', 'Reset Layout', 'Analyze Files', 'Export as PNG'];
 
     document.querySelectorAll('#controls button').forEach((btn, index) => {
         btn.addEventListener('mouseenter', (e) => showButtonTooltip(e as MouseEvent, tooltips[index]));
@@ -130,17 +134,14 @@ export function formatGraph(): void {
         }
     });
 
-    // Also update expandedNodes (which includes shared node virtual copies)
+    // Also update expandedNodes
     state.expandedNodes.forEach((node: any) => {
-        if (node._originalId) {
-            // Shared node - look up position using virtual ID
-            const pos = originalPositions.get(node.id);
-            if (pos) {
-                node.x = pos.x;
-                node.y = pos.y;
-                node.fx = pos.x;
-                node.fy = pos.y;
-            }
+        const pos = originalPositions.get(node.id);
+        if (pos) {
+            node.x = pos.x;
+            node.y = pos.y;
+            node.fx = pos.x;
+            node.fy = pos.y;
         }
     });
 
@@ -158,30 +159,18 @@ export function formatGraph(): void {
         }
 
         // Fallback: recalculate from node positions (for backwards compatibility)
-        // Get ALL nodes in this workflow (including shared)
         const allGroupNodes = currentGraphData.nodes.filter((n: any) =>
             group.nodes.includes(n.id)
         );
         if (allGroupNodes.length === 0) return;
 
-        // Build positions array with width and height, handling shared nodes via virtual IDs
+        // Build positions array with width and height
         const nodesWithBounds: { x: number; y: number; width: number; height: number }[] = [];
         allGroupNodes.forEach((node: any) => {
-            const isShared = getNodeWorkflowCount(node.id, workflowGroups) > 1;
             const width = node.width || NODE_WIDTH;
             const height = node.height || NODE_HEIGHT;
-            if (isShared) {
-                // Shared nodes: get position from originalPositions using virtual ID
-                const virtualId = getVirtualNodeId(node.id, group.id);
-                const pos = originalPositions.get(virtualId);
-                if (pos) {
-                    nodesWithBounds.push({ x: pos.x, y: pos.y, width, height });
-                }
-            } else {
-                // Non-shared nodes: use position directly from node
-                if (typeof node.x === 'number' && typeof node.y === 'number') {
-                    nodesWithBounds.push({ x: node.x, y: node.y, width, height });
-                }
+            if (typeof node.x === 'number' && typeof node.y === 'number') {
+                nodesWithBounds.push({ x: node.x, y: node.y, width, height });
             }
         });
         if (nodesWithBounds.length === 0) return;
@@ -223,11 +212,20 @@ export function formatGraph(): void {
         .attr('transform', (d: any) => `translate(${d.x},${d.y})`);
 
     // Update edges instantly (no transitions)
-    svg.selectAll('.link')
-        .attr('d', (l: any) => getElkEdgePath(l, workflowGroups));
-
-    svg.selectAll('.link-hover')
-        .attr('d', (l: any) => getElkEdgePath(l, workflowGroups));
+    // Hide entire link-group when path is invalid to prevent floating arrowheads
+    svg.selectAll('.link-group')
+        .each(function(this: SVGGElement, l: any) {
+            const path = getElkEdgePath(l, workflowGroups);
+            const group = d3.select(this);
+            if (!path || path === '') {
+                // Hide entire group (includes arrowhead marker)
+                group.style('display', 'none');
+            } else {
+                group.style('display', null);
+                group.select('.link').attr('d', path);
+                group.select('.link-hover').attr('d', path);
+            }
+        });
 
     // Update minimap
     renderMinimap();

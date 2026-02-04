@@ -11,3 +11,4 @@ out/**/*.map
 *.log
 *.pid
 media/icon-chat-old.png
+!media/tree-sitter/**
