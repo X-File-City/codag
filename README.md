@@ -19,7 +19,7 @@ Codag analyzes your code for LLM API calls and AI frameworks, then generates int
 <br/>
 
 <p align="center">
-  <img src="demo.png" alt="Codag in action" width="800" />
+  <img src="demo.gif" alt="Codag in action" width="800" />
 </p>
 
 <p align="center">
