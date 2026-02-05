@@ -227,6 +227,9 @@ class NotificationQueue {
 
         const el = document.createElement('div');
         el.className = 'notification-item';
+        if (notification.progress) {
+            el.classList.add('has-progress');
+        }
         el.dataset.id = notification.id;
         el.dataset.type = notification.type;
 
@@ -303,7 +306,7 @@ class NotificationQueue {
 
     private updateElement(notification: Notification): void {
         if (!notification.element) return;
-        const closeBtn = notification.element.querySelector('.notification-close');
+        notification.element.classList.toggle('has-progress', !!notification.progress);
         notification.element.innerHTML = this.buildContent(notification);
         // Re-attach close handler after innerHTML replacement
         const newCloseBtn = notification.element.querySelector('.notification-close');

@@ -338,7 +338,7 @@ body {
     background: var(--vscode-editor-background);
     border: 1px solid var(--vscode-panel-border);
     border-radius: 6px;
-    padding: 10px 14px;
+    padding: 10px 14px 8px;
     font-size: 12px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     transform: translateX(100%);
@@ -385,6 +385,10 @@ body {
 }
 .notification-item[data-type="info"] {
     border-color: var(--vscode-focusBorder);
+}
+
+.notification-item.has-progress {
+    padding-bottom: 10px;
 }
 
 .notification-content {

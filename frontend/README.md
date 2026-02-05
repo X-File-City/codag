@@ -18,17 +18,17 @@ Codag analyzes your code for LLM API calls and AI frameworks, then generates int
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/michaelzixizhou/codag/main/media/aichatbot.png" alt="Vercel AI Chatbot" width="800" /><br/>
-  <em>Vercel AI Chatbot</em>
+  <a href="https://github.com/vercel/ai-chatbot"><strong>vercel/ai-chatbot</strong></a>
 </p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/michaelzixizhou/codag/main/media/langchain.png" alt="LangChain" width="800" /><br/>
-  <em>LangChain</em>
+  <a href="https://github.com/langchain-ai/langchain"><strong>langchain-ai/langchain</strong></a>
 </p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/michaelzixizhou/codag/main/media/trycua.png" alt="TryCua" width="800" /><br/>
-  <em>TryCua</em>
+  <a href="https://github.com/trycua/cua"><strong>trycua/cua</strong></a>
 </p>
 
 ## Why Codag?

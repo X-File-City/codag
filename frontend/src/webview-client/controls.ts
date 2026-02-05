@@ -4,7 +4,6 @@ import { getNodeOrCollapsedGroup } from './utils';
 import { renderMinimap } from './minimap';
 import { positionTooltipNearMouse } from './helpers';
 import { updateEdgeLabels, getElkEdgePath } from './edges';
-import { addWorkflowExportButtons } from './export';
 import {
     NODE_WIDTH, NODE_HEIGHT, NODE_HALF_WIDTH,
     GROUP_BOUNDS_PADDING_X, GROUP_BOUNDS_PADDING_TOP, GROUP_BOUNDS_PADDING_BOTTOM,
@@ -18,10 +17,6 @@ export function setupControls(): void {
     document.getElementById('btn-zoom-in')?.addEventListener('click', zoomIn);
     document.getElementById('btn-zoom-out')?.addEventListener('click', zoomOut);
     document.getElementById('btn-fit-screen')?.addEventListener('click', () => fitToScreen());
-    document.getElementById('btn-format')?.addEventListener('click', () => {
-        formatGraph();
-        addWorkflowExportButtons();
-    });
     document.getElementById('btn-analyze')?.addEventListener('click', openAnalyzePanel);
     document.getElementById('legend-header')?.addEventListener('click', toggleLegend);
 
@@ -58,7 +53,7 @@ function zoomOut(): void {
 }
 
 function setupButtonTooltips(): void {
-    const tooltips = ['Zoom In', 'Zoom Out', 'Fit to Screen', 'Reset Layout', 'Analyze Files', 'Export as PNG'];
+    const tooltips = ['Zoom In', 'Zoom Out', 'Fit to Screen', 'Analyze Files', 'Export'];
 
     document.querySelectorAll('#controls button').forEach((btn, index) => {
         btn.addEventListener('mouseenter', (e) => showButtonTooltip(e as MouseEvent, tooltips[index]));

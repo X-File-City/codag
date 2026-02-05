@@ -484,9 +484,10 @@ function prepareSVGForExport(bounds: { minX: number; minY: number; maxX: number;
 type ImageFormat = 'png' | 'jpeg';
 
 /**
- * Convert SVG to image (PNG or JPEG) using canvas
+ * Convert SVG to base64 image data (PNG or JPEG) using canvas
+ * Returns base64-encoded image data (without data URL prefix)
  */
-async function svgToImage(svg: SVGSVGElement, format: ImageFormat, scale: number = 2): Promise<Blob> {
+async function svgToBase64(svg: SVGSVGElement, format: ImageFormat, scale: number = 2): Promise<string> {
     const width = parseInt(svg.getAttribute('width') || '800');
     const height = parseInt(svg.getAttribute('height') || '600');
 
@@ -495,14 +496,13 @@ async function svgToImage(svg: SVGSVGElement, format: ImageFormat, scale: number
 
     // Use base64 encoding instead of URL encoding
     const base64Svg = btoa(unescape(encodeURIComponent(svgString)));
-    const dataUrl = `data:image/svg+xml;base64,${base64Svg}`;
+    const svgDataUrl = `data:image/svg+xml;base64,${base64Svg}`;
 
     // Get background color for JPEG (JPEG doesn't support transparency)
     const bgColor = resolveCSSVariable('var(--vscode-editor-background)') || '#1e1e1e';
 
     return new Promise((resolve, reject) => {
         const img = new Image();
-        // Set crossOrigin to help with some browser quirks
         img.crossOrigin = 'anonymous';
 
         img.onload = () => {
@@ -529,18 +529,19 @@ async function svgToImage(svg: SVGSVGElement, format: ImageFormat, scale: number
             // Draw the image
             ctx.drawImage(img, 0, 0, width, height);
 
-            // Convert to blob - wrap in try-catch for tainted canvas
-            const mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
-            const quality = format === 'jpeg' ? 0.95 : undefined;
-
+            // Convert to data URL - more reliable than toBlob in webview contexts
             try {
-                canvas.toBlob((blob) => {
-                    if (blob) {
-                        resolve(blob);
-                    } else {
-                        reject(new Error(`Failed to create ${format.toUpperCase()} blob`));
-                    }
-                }, mimeType, quality);
+                const mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
+                const quality = format === 'jpeg' ? 0.95 : undefined;
+                const dataUrl = canvas.toDataURL(mimeType, quality);
+
+                // Extract base64 data (remove "data:image/xxx;base64," prefix)
+                const base64Data = dataUrl.split(',')[1];
+                if (!base64Data) {
+                    reject(new Error(`Failed to create ${format.toUpperCase()} image`));
+                    return;
+                }
+                resolve(base64Data);
             } catch (e) {
                 reject(new Error('Canvas export failed - the graph may contain external resources'));
             }
@@ -550,29 +551,14 @@ async function svgToImage(svg: SVGSVGElement, format: ImageFormat, scale: number
             reject(new Error('Failed to load SVG'));
         };
 
-        img.src = dataUrl;
+        img.src = svgDataUrl;
     });
 }
 
 /**
- * Save blob using VSCode save dialog
+ * Save base64 image data using VSCode save dialog
  */
-async function saveBlob(blob: Blob, suggestedName: string): Promise<void> {
-    // Convert blob to base64
-    const reader = new FileReader();
-    const base64Promise = new Promise<string>((resolve, reject) => {
-        reader.onload = () => {
-            const dataUrl = reader.result as string;
-            // Extract base64 part after "data:image/png;base64,"
-            const base64 = dataUrl.split(',')[1];
-            resolve(base64);
-        };
-        reader.onerror = reject;
-    });
-    reader.readAsDataURL(blob);
-
-    const base64Data = await base64Promise;
-
+async function saveBase64Image(base64Data: string, suggestedName: string): Promise<void> {
     // Send to extension to show save dialog
     state.vscode.postMessage({
         command: 'saveExport',
@@ -621,10 +607,10 @@ export async function exportAllAsPNG(): Promise<void> {
         }
 
         const svg = prepareSVGForExport(bounds);
-        const blob = await svgToImage(svg, 'png', 2);
+        const base64Data = await svgToBase64(svg, 'png', 2);
 
         const timestamp = new Date().toISOString().slice(0, 10);
-        await saveBlob(blob, `codag-workflow-${timestamp}.png`);
+        await saveBase64Image(base64Data, `codag-workflow-${timestamp}.png`);
     } catch (error) {
         console.error('Export failed:', error);
         showExportNotification('Export failed: ' + (error as Error).message, true);
@@ -643,10 +629,10 @@ export async function exportAllAsJPEG(): Promise<void> {
         }
 
         const svg = prepareSVGForExport(bounds);
-        const blob = await svgToImage(svg, 'jpeg', 2);
+        const base64Data = await svgToBase64(svg, 'jpeg', 2);
 
         const timestamp = new Date().toISOString().slice(0, 10);
-        await saveBlob(blob, `codag-workflow-${timestamp}.jpg`);
+        await saveBase64Image(base64Data, `codag-workflow-${timestamp}.jpg`);
     } catch (error) {
         console.error('Export failed:', error);
         showExportNotification('Export failed: ' + (error as Error).message, true);
@@ -665,11 +651,11 @@ export async function exportWorkflowAsPNG(groupId: string, groupName: string): P
         }
 
         const svg = prepareSVGForExport(bounds, groupId);
-        const blob = await svgToImage(svg, 'png', 2);
+        const base64Data = await svgToBase64(svg, 'png', 2);
 
         // Sanitize filename
         const safeName = groupName.replace(/[^a-z0-9]/gi, '-').toLowerCase();
-        await saveBlob(blob, `codag-${safeName}.png`);
+        await saveBase64Image(base64Data, `codag-${safeName}.png`);
     } catch (error) {
         console.error('Export failed:', error);
         showExportNotification('Export failed: ' + (error as Error).message, true);
@@ -688,11 +674,11 @@ export async function exportWorkflowAsJPEG(groupId: string, groupName: string): 
         }
 
         const svg = prepareSVGForExport(bounds, groupId);
-        const blob = await svgToImage(svg, 'jpeg', 2);
+        const base64Data = await svgToBase64(svg, 'jpeg', 2);
 
         // Sanitize filename
         const safeName = groupName.replace(/[^a-z0-9]/gi, '-').toLowerCase();
-        await saveBlob(blob, `codag-${safeName}.jpg`);
+        await saveBase64Image(base64Data, `codag-${safeName}.jpg`);
     } catch (error) {
         console.error('Export failed:', error);
         showExportNotification('Export failed: ' + (error as Error).message, true);
