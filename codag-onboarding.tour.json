@@ -275,14 +275,6 @@
           "type": "documentation"
         }
       ]
-    },
-    {
-      "id": "step-8-full-picture",
-      "title": "The Full Picture",
-      "description": "You've now seen the complete Codag architecture! The data flow is: tree-sitter parses code locally → static patterns detect LLM providers → the backend's Gemini model performs semantic analysis → Mermaid output is parsed into graph data → D3.js + ELK render the interactive visualization in VS Code. File watchers enable real-time updates, and per-file caching keeps things fast. Happy contributing!",
-      "estimatedTime": 60,
-      "focusDirectory": "",
-      "colorMode": "fileTypes"
     }
   ],
   "metadata": {
