@@ -75,7 +75,7 @@
       "title": "Analysis Pipeline",
       "description": "The analysis/ directory orchestrates the workflow detection process. workspace.ts handles full workspace analysis, selected-files.ts processes user-selected files, and single-file.ts enables incremental updates on save. The analyzer.ts and static-analyzer.ts at the src root detect LLM API calls using pattern matching across 17+ providers.",
       "estimatedTime": 120,
-      "focusDirectory": "frontend/src",
+      "focusDirectory": "frontend",
       "highlightLayers": [
         {
           "id": "analysis-dir",
@@ -204,7 +204,7 @@
       "title": "Python Backend (FastAPI + Gemini)",
       "description": "The backend is a FastAPI service that performs semantic workflow analysis using Google Gemini. main.py exposes /analyze and /health endpoints. The pipeline flows: analyzer.py extracts workflow context → prompts.py constructs LLM prompts → gemini_client.py calls Gemini 2.5 Flash → mermaid_parser.py parses Mermaid-format responses into structured graph data. models.py defines the Pydantic data contracts shared with the frontend.",
       "estimatedTime": 120,
-      "focusDirectory": "backend",
+      "focusDirectory": "",
       "highlightLayers": [
         {
           "id": "api-layer",
