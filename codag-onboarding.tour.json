@@ -1,0 +1,305 @@
+{
+  "id": "codag-onboarding",
+  "title": "Codag Architecture Tour",
+  "description": "A guided walkthrough of the Codag VS Code extension — understand how it analyzes AI/LLM workflows and renders interactive DAG visualizations",
+  "version": "1.0.0",
+  "audience": "New Contributors & AI Assistants",
+  "prerequisites": [
+    "Basic understanding of TypeScript and Python",
+    "Familiarity with VS Code extension development is helpful"
+  ],
+  "steps": [
+    {
+      "id": "step-1-overview",
+      "title": "Project Overview",
+      "description": "Welcome to Codag! This is a VS Code extension that visualizes AI/LLM workflows in your codebase as interactive, clickable DAG graphs. The project has two main parts: a TypeScript frontend (the VS Code extension) and a Python backend (FastAPI + Google Gemini). Let's explore the full structure.",
+      "estimatedTime": 60,
+      "colorMode": "fileTypes",
+      "highlightLayers": [
+        {
+          "id": "main-areas",
+          "name": "Core Directories",
+          "color": "#3b82f6",
+          "items": [
+            { "path": "frontend", "type": "directory" },
+            { "path": "backend", "type": "directory" }
+          ],
+          "opacity": 0.6,
+          "renderStrategy": "border"
+        }
+      ],
+      "focusDirectory": ""
+    },
+    {
+      "id": "step-2-extension-entry",
+      "title": "Extension Entry Point",
+      "description": "The extension starts in extension.ts, which registers VS Code commands, sets up file watchers, and initializes the webview panel. The webview.ts file manages the WebviewPanel lifecycle and routes messages between the extension and the visualization UI.",
+      "estimatedTime": 90,
+      "focusDirectory": "frontend/src",
+      "highlightLayers": [
+        {
+          "id": "entry-files",
+          "name": "Entry Points",
+          "color": "#10b981",
+          "items": [
+            { "path": "frontend/src/extension.ts", "type": "file" },
+            { "path": "frontend/src/webview.ts", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "fill"
+        },
+        {
+          "id": "config-files",
+          "name": "Configuration",
+          "color": "#f59e0b",
+          "items": [
+            { "path": "frontend/src/config.ts", "type": "file" },
+            { "path": "frontend/src/types.ts", "type": "file" },
+            { "path": "frontend/src/api.ts", "type": "file" }
+          ],
+          "opacity": 0.6,
+          "renderStrategy": "fill"
+        }
+      ],
+      "colorMode": "fileTypes",
+      "interactiveActions": [
+        {
+          "type": "click-file",
+          "description": "Click on extension.ts to see how commands are registered",
+          "target": "frontend/src/extension.ts"
+        }
+      ]
+    },
+    {
+      "id": "step-3-analysis-pipeline",
+      "title": "Analysis Pipeline",
+      "description": "The analysis/ directory orchestrates the workflow detection process. workspace.ts handles full workspace analysis, selected-files.ts processes user-selected files, and single-file.ts enables incremental updates on save. The analyzer.ts and static-analyzer.ts at the src root detect LLM API calls using pattern matching across 17+ providers.",
+      "estimatedTime": 120,
+      "focusDirectory": "frontend/src",
+      "highlightLayers": [
+        {
+          "id": "analysis-dir",
+          "name": "Analysis Orchestration",
+          "color": "#8b5cf6",
+          "items": [
+            { "path": "frontend/src/analysis", "type": "directory" }
+          ],
+          "opacity": 0.6,
+          "renderStrategy": "border"
+        },
+        {
+          "id": "detection-files",
+          "name": "Provider Detection",
+          "color": "#ef4444",
+          "items": [
+            { "path": "frontend/src/analyzer.ts", "type": "file" },
+            { "path": "frontend/src/static-analyzer.ts", "type": "file" },
+            { "path": "frontend/src/providers.ts", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "fill"
+        }
+      ],
+      "colorMode": "fileTypes",
+      "interactiveActions": [
+        {
+          "type": "hover-directory",
+          "description": "Hover over the analysis directory to see its contents",
+          "target": "frontend/src/analysis"
+        }
+      ]
+    },
+    {
+      "id": "step-4-tree-sitter",
+      "title": "Tree-Sitter Code Parsing",
+      "description": "Codag supports 10+ programming languages using tree-sitter WASM parsers. The parser-manager.ts initializes language grammars, extractors.ts walks ASTs to extract functions, imports, and call relationships. The queries/ directory contains language-specific tree-sitter patterns for Python, TypeScript, Go, Rust, Java, C/C++, Swift, and Lua.",
+      "estimatedTime": 120,
+      "focusDirectory": "frontend/src/tree-sitter",
+      "highlightLayers": [
+        {
+          "id": "parser-core",
+          "name": "Parser Core",
+          "color": "#06b6d4",
+          "items": [
+            { "path": "frontend/src/tree-sitter/parser-manager.ts", "type": "file" },
+            { "path": "frontend/src/tree-sitter/extractors.ts", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "fill"
+        },
+        {
+          "id": "language-queries",
+          "name": "Language Queries",
+          "color": "#f59e0b",
+          "items": [
+            { "path": "frontend/src/tree-sitter/queries", "type": "directory" }
+          ],
+          "opacity": 0.6,
+          "renderStrategy": "border"
+        }
+      ],
+      "colorMode": "fileTypes",
+      "interactiveActions": [
+        {
+          "type": "click-file",
+          "description": "Click extractors.ts to see multi-language AST extraction",
+          "target": "frontend/src/tree-sitter/extractors.ts"
+        }
+      ]
+    },
+    {
+      "id": "step-5-webview-visualization",
+      "title": "Graph Visualization (Webview)",
+      "description": "The webview-client/ directory contains the interactive DAG visualization running inside VS Code's webview. It uses D3.js for rendering and ELK for graph layout. Key files: main.ts (entry), nodes.ts & edges.ts (rendering), layout.ts & elk-layout.ts (positioning), messages.ts (IPC with the extension), and export.ts (PNG export).",
+      "estimatedTime": 120,
+      "focusDirectory": "frontend/src/webview-client",
+      "highlightLayers": [
+        {
+          "id": "rendering",
+          "name": "Rendering Engine",
+          "color": "#ec4899",
+          "items": [
+            { "path": "frontend/src/webview-client/main.ts", "type": "file" },
+            { "path": "frontend/src/webview-client/nodes.ts", "type": "file" },
+            { "path": "frontend/src/webview-client/edges.ts", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "fill"
+        },
+        {
+          "id": "layout-engine",
+          "name": "Layout Engine",
+          "color": "#3b82f6",
+          "items": [
+            { "path": "frontend/src/webview-client/layout.ts", "type": "file" },
+            { "path": "frontend/src/webview-client/elk-layout.ts", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "fill"
+        },
+        {
+          "id": "interactivity",
+          "name": "User Interaction",
+          "color": "#10b981",
+          "items": [
+            { "path": "frontend/src/webview-client/controls.ts", "type": "file" },
+            { "path": "frontend/src/webview-client/panel.ts", "type": "file" },
+            { "path": "frontend/src/webview-client/minimap.ts", "type": "file" },
+            { "path": "frontend/src/webview-client/messages.ts", "type": "file" }
+          ],
+          "opacity": 0.6,
+          "renderStrategy": "fill"
+        }
+      ],
+      "colorMode": "fileTypes",
+      "interactiveActions": [
+        {
+          "type": "explore",
+          "description": "Explore the webview-client directory to see all 29 UI component files"
+        }
+      ]
+    },
+    {
+      "id": "step-6-backend",
+      "title": "Python Backend (FastAPI + Gemini)",
+      "description": "The backend is a FastAPI service that performs semantic workflow analysis using Google Gemini. main.py exposes /analyze and /health endpoints. The pipeline flows: analyzer.py extracts workflow context → prompts.py constructs LLM prompts → gemini_client.py calls Gemini 2.5 Flash → mermaid_parser.py parses Mermaid-format responses into structured graph data. models.py defines the Pydantic data contracts shared with the frontend.",
+      "estimatedTime": 120,
+      "focusDirectory": "backend",
+      "highlightLayers": [
+        {
+          "id": "api-layer",
+          "name": "API Layer",
+          "color": "#3b82f6",
+          "items": [
+            { "path": "backend/main.py", "type": "file" },
+            { "path": "backend/models.py", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "fill"
+        },
+        {
+          "id": "ai-pipeline",
+          "name": "AI Analysis Pipeline",
+          "color": "#8b5cf6",
+          "items": [
+            { "path": "backend/analyzer.py", "type": "file" },
+            { "path": "backend/prompts.py", "type": "file" },
+            { "path": "backend/gemini_client.py", "type": "file" },
+            { "path": "backend/mermaid_parser.py", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "fill"
+        }
+      ],
+      "colorMode": "fileTypes",
+      "interactiveActions": [
+        {
+          "type": "click-file",
+          "description": "Click main.py to see the API endpoints",
+          "target": "backend/main.py"
+        }
+      ]
+    },
+    {
+      "id": "step-7-infrastructure",
+      "title": "Infrastructure & Development Setup",
+      "description": "The Makefile provides development commands: `make setup` installs dependencies, `make run` starts the backend, and `make docker-up` launches via Docker Compose. The backend runs on port 52104 and requires a GEMINI_API_KEY in .env. GitHub templates standardize issues and PRs. Check CONTRIBUTING.md for the full development workflow.",
+      "estimatedTime": 60,
+      "focusDirectory": "",
+      "highlightLayers": [
+        {
+          "id": "infra-files",
+          "name": "Infrastructure",
+          "color": "#f59e0b",
+          "items": [
+            { "path": "Makefile", "type": "file" },
+            { "path": "docker-compose.yml", "type": "file" },
+            { "path": "backend/Dockerfile", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "fill"
+        },
+        {
+          "id": "docs",
+          "name": "Documentation",
+          "color": "#10b981",
+          "items": [
+            { "path": "README.md", "type": "file" },
+            { "path": "CONTRIBUTING.md", "type": "file" },
+            { "path": "CHANGELOG.md", "type": "file" }
+          ],
+          "opacity": 0.6,
+          "renderStrategy": "fill"
+        }
+      ],
+      "colorMode": "fileTypes",
+      "interactiveActions": [
+        {
+          "type": "click-file",
+          "description": "Click the Makefile to see available dev commands",
+          "target": "Makefile"
+        }
+      ],
+      "resources": [
+        {
+          "title": "Contributing Guide",
+          "url": "CONTRIBUTING.md",
+          "type": "documentation"
+        }
+      ]
+    },
+    {
+      "id": "step-8-full-picture",
+      "title": "The Full Picture",
+      "description": "You've now seen the complete Codag architecture! The data flow is: tree-sitter parses code locally → static patterns detect LLM providers → the backend's Gemini model performs semantic analysis → Mermaid output is parsed into graph data → D3.js + ELK render the interactive visualization in VS Code. File watchers enable real-time updates, and per-file caching keeps things fast. Happy contributing!",
+      "estimatedTime": 60,
+      "focusDirectory": "",
+      "colorMode": "fileTypes"
+    }
+  ],
+  "metadata": {
+    "author": "Claude Code",
+    "createdAt": "2026-02-07",
+    "tags": ["onboarding", "architecture", "tutorial"]
+  }
+}
