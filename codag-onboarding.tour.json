@@ -73,39 +73,45 @@
     {
       "id": "step-3-analysis-pipeline",
       "title": "Analysis Pipeline",
-      "description": "The analysis/ directory orchestrates the workflow detection process. workspace.ts handles full workspace analysis, selected-files.ts processes user-selected files, and single-file.ts enables incremental updates on save. The analyzer.ts and static-analyzer.ts at the src root detect LLM API calls using pattern matching across 17+ providers.",
+      "description": "The analysis/ directory orchestrates the workflow detection process. workspace.ts handles full workspace analysis, selected-files.ts processes user-selected files, and single-file.ts enables incremental updates on save. The analyzer.ts, static-analyzer.ts, and providers.ts in the parent src/ directory detect LLM API calls using pattern matching across 17+ providers.",
       "estimatedTime": 120,
-      "focusDirectory": "frontend",
+      "focusDirectory": "frontend/src/analysis",
       "highlightLayers": [
         {
-          "id": "analysis-dir",
+          "id": "orchestration-files",
           "name": "Analysis Orchestration",
           "color": "#8b5cf6",
           "items": [
-            { "path": "frontend/src/analysis", "type": "directory" }
+            { "path": "frontend/src/analysis/workspace.ts", "type": "file" },
+            { "path": "frontend/src/analysis/selected-files.ts", "type": "file" },
+            { "path": "frontend/src/analysis/single-file.ts", "type": "file" }
           ],
-          "opacity": 0.6,
-          "renderStrategy": "border"
+          "opacity": 0.7,
+          "renderStrategy": "fill"
         },
         {
-          "id": "detection-files",
-          "name": "Provider Detection",
+          "id": "state-helpers",
+          "name": "State & Helpers",
           "color": "#ef4444",
           "items": [
-            { "path": "frontend/src/analyzer.ts", "type": "file" },
-            { "path": "frontend/src/static-analyzer.ts", "type": "file" },
-            { "path": "frontend/src/providers.ts", "type": "file" }
+            { "path": "frontend/src/analysis/state.ts", "type": "file" },
+            { "path": "frontend/src/analysis/helpers.ts", "type": "file" }
           ],
           "opacity": 0.7,
           "renderStrategy": "fill"
         }
       ],
       "colorMode": "fileTypes",
+      "highlightFiles": [
+        "frontend/src/analyzer.ts",
+        "frontend/src/static-analyzer.ts",
+        "frontend/src/providers.ts"
+      ],
       "interactiveActions": [
         {
-          "type": "hover-directory",
-          "description": "Hover over the analysis directory to see its contents",
-          "target": "frontend/src/analysis"
+          "type": "click-file",
+          "description": "Click workspace.ts to see the main analysis orchestration",
+          "target": "frontend/src/analysis/workspace.ts"
         }
       ]
     },
@@ -204,32 +210,14 @@
       "title": "Python Backend (FastAPI + Gemini)",
       "description": "The backend is a FastAPI service that performs semantic workflow analysis using Google Gemini. main.py exposes /analyze and /health endpoints. The pipeline flows: analyzer.py extracts workflow context → prompts.py constructs LLM prompts → gemini_client.py calls Gemini 2.5 Flash → mermaid_parser.py parses Mermaid-format responses into structured graph data. models.py defines the Pydantic data contracts shared with the frontend.",
       "estimatedTime": 120,
-      "focusDirectory": "",
-      "highlightLayers": [
-        {
-          "id": "api-layer",
-          "name": "API Layer",
-          "color": "#3b82f6",
-          "items": [
-            { "path": "backend/main.py", "type": "file" },
-            { "path": "backend/models.py", "type": "file" }
-          ],
-          "opacity": 0.7,
-          "renderStrategy": "fill"
-        },
-        {
-          "id": "ai-pipeline",
-          "name": "AI Analysis Pipeline",
-          "color": "#8b5cf6",
-          "items": [
-            { "path": "backend/analyzer.py", "type": "file" },
-            { "path": "backend/prompts.py", "type": "file" },
-            { "path": "backend/gemini_client.py", "type": "file" },
-            { "path": "backend/mermaid_parser.py", "type": "file" }
-          ],
-          "opacity": 0.7,
-          "renderStrategy": "fill"
-        }
+      "focusDirectory": "backend",
+      "highlightFiles": [
+        "backend/main.py",
+        "backend/models.py",
+        "backend/analyzer.py",
+        "backend/prompts.py",
+        "backend/gemini_client.py",
+        "backend/mermaid_parser.py"
       ],
       "colorMode": "fileTypes",
       "interactiveActions": [
